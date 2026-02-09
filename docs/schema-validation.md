@@ -121,9 +121,13 @@ _, err = transpiler.Transpile(`{"some": [{"var": "amount"}, {"==": [{"var": ""},
 The `in` operator behavior depends on the field type:
 
 ```go
-// Array field: uses IN syntax
+// Array field: uses dialect-specific array membership syntax
 sql, _ := transpiler.Transpile(`{"in": ["admin", {"var": "tags"}]}`)
-fmt.Println(sql) // Output: WHERE 'admin' IN tags
+fmt.Println(sql)
+// BigQuery/Spanner: WHERE 'admin' IN UNNEST(tags)
+// PostgreSQL:       WHERE 'admin' = ANY(tags)
+// DuckDB:           WHERE list_contains(tags, 'admin')
+// ClickHouse:       WHERE has(tags, 'admin')
 
 // String field: uses STRPOS for containment
 sql, _ = transpiler.Transpile(`{"in": ["hello", {"var": "name"}]}`)

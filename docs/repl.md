@@ -13,6 +13,8 @@ go build -o bin/repl ./cmd/repl
 ./bin/repl
 ```
 
+On startup, the REPL will prompt for an optional schema path. Leave it empty to skip.
+
 ## Basic Usage
 
 ```
@@ -30,6 +32,7 @@ SQL: WHERE (status = 'active' AND count > 5)
 | `:help` | Show available commands |
 | `:examples` | Show example JSON Logic expressions |
 | `:dialect` | Change the SQL dialect |
+| `:schema <path>` | Load a schema JSON file for validation |
 | `:file <path>` | Read JSON Logic from a file |
 | `:clear` | Clear the screen |
 | `:quit` | Exit the REPL |
@@ -65,6 +68,15 @@ echo '{"and": [...very large JSON...]}' > input.json
 # In the REPL, load it with :file
 [BigQuery] jsonlogic> :file input.json
 SQL: WHERE (...)
+```
+
+## Loading a Schema
+
+Use `:schema` to load a schema file for field validation and type-aware SQL:
+
+```
+[BigQuery] jsonlogic> :schema schema.json
+Schema loaded: schema.json
 ```
 
 ## Examples Command

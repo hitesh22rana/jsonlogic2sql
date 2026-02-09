@@ -45,6 +45,7 @@ Some operators generate different SQL based on the target dialect:
 | `map` (arrays) | `ARRAY(SELECT ... UNNEST)` | `ARRAY(SELECT ... UNNEST)` | `ARRAY(SELECT ... UNNEST)` | `ARRAY(SELECT ... UNNEST)` | `arrayMap(x -> ..., arr)` |
 | `filter` (arrays) | `ARRAY(SELECT ... WHERE)` | `ARRAY(SELECT ... WHERE)` | `ARRAY(SELECT ... WHERE)` | `ARRAY(SELECT ... WHERE)` | `arrayFilter(x -> ..., arr)` |
 | `substr` | `SUBSTR(s, i, n)` | `SUBSTR(s, i, n)` | `SUBSTR(s, i, n)` | `SUBSTR(s, i, n)` | `substring(s, i, n)` |
+| `in` (array) | `value IN UNNEST(array)` | `value IN UNNEST(array)` | `value = ANY(array)` | `list_contains(array, value)` | `has(array, value)` |
 | `in` (string) | `STRPOS(h, n) > 0` | `STRPOS(h, n) > 0` | `POSITION(n IN h) > 0` | `STRPOS(h, n) > 0` | `position(h, n) > 0` |
 
 ## SQL Function Reference by Dialect

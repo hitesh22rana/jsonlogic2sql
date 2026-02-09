@@ -97,6 +97,9 @@ var dialects = []struct {
 // currentDialect holds the currently selected dialect.
 var currentDialect jsonlogic2sql.Dialect
 
+// currentSchema holds the loaded schema to preserve validation across dialect switches.
+var currentSchema *jsonlogic2sql.Schema
+
 // selectDialect prompts the user to select a SQL dialect.
 func selectDialect(scanner *bufio.Scanner) jsonlogic2sql.Dialect {
 	fmt.Println("Select SQL dialect:")
@@ -152,8 +155,11 @@ func main() {
 	fmt.Println("Type ':help' for commands, ':quit' to exit")
 	fmt.Println()
 
+	currentSchema = promptSchema(scanner)
+
 	transpiler, err := jsonlogic2sql.NewTranspilerWithConfig(&jsonlogic2sql.TranspilerConfig{
 		Dialect: currentDialect,
+		Schema:  currentSchema,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create transpiler: %v\n", err)
@@ -201,6 +207,34 @@ func main() {
 	}
 }
 
+// promptSchema optionally loads a schema from a user-provided path.
+// Returns nil if the user skips or if loading fails.
+func promptSchema(scanner *bufio.Scanner) *jsonlogic2sql.Schema {
+	fmt.Print("Enter schema path (optional, leave empty to skip): ")
+	if !scanner.Scan() {
+		return nil
+	}
+	schemaPath := strings.TrimSpace(scanner.Text())
+	if schemaPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		fmt.Printf("Error reading schema file: %v\n\n", err)
+		return nil
+	}
+
+	schema, err := jsonlogic2sql.NewSchemaFromJSON(data)
+	if err != nil {
+		fmt.Printf("Error parsing schema file: %v\n\n", err)
+		return nil
+	}
+
+	fmt.Printf("Schema loaded: %s\n\n", schemaPath)
+	return schema
+}
+
 func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *bufio.Scanner) *jsonlogic2sql.Transpiler {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
@@ -216,6 +250,8 @@ func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *
 		showExamples()
 	case ":dialect":
 		return handleDialectChange(scanner)
+	case ":schema":
+		handleSchemaCommand(parts, transpiler)
 	case ":file":
 		handleFileInput(parts, transpiler)
 	case ":quit", ":exit":
@@ -270,6 +306,7 @@ func handleDialectChange(scanner *bufio.Scanner) *jsonlogic2sql.Transpiler {
 
 	transpiler, err := jsonlogic2sql.NewTranspilerWithConfig(&jsonlogic2sql.TranspilerConfig{
 		Dialect: currentDialect,
+		Schema:  currentSchema,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create transpiler: %v\n", err)
@@ -281,6 +318,33 @@ func handleDialectChange(scanner *bufio.Scanner) *jsonlogic2sql.Transpiler {
 
 	fmt.Printf("\nSwitched to %s dialect\n\n", getDialectName(currentDialect))
 	return transpiler
+}
+
+// handleSchemaCommand handles the :schema command to load a schema from a file.
+// This enables schema validation and type-aware SQL generation in the REPL.
+func handleSchemaCommand(parts []string, transpiler *jsonlogic2sql.Transpiler) {
+	if len(parts) < 2 {
+		fmt.Println("Usage: :schema <path>")
+		fmt.Println("Example: :schema schema.json")
+		return
+	}
+
+	schemaPath := parts[1]
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		fmt.Printf("Error reading schema file: %v\n", err)
+		return
+	}
+
+	schema, err := jsonlogic2sql.NewSchemaFromJSON(data)
+	if err != nil {
+		fmt.Printf("Error parsing schema file: %v\n", err)
+		return
+	}
+
+	currentSchema = schema
+	transpiler.SetSchema(schema)
+	fmt.Printf("Schema loaded: %s\n\n", schemaPath)
 }
 
 // registerCustomOperators registers all custom operators for the REPL.
@@ -558,12 +622,13 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 
 func showHelp() {
 	fmt.Println("Available commands:")
-	fmt.Println("  :help        - Show this help message")
-	fmt.Println("  :examples    - Show example JSON Logic expressions")
-	fmt.Println("  :dialect     - Change the SQL dialect")
-	fmt.Println("  :file <path> - Read JSON Logic from a file (for large inputs)")
-	fmt.Println("  :clear       - Clear the screen")
-	fmt.Println("  :quit        - Exit the REPL")
+	fmt.Println("  :help          - Show this help message")
+	fmt.Println("  :examples      - Show example JSON Logic expressions")
+	fmt.Println("  :dialect       - Change the SQL dialect")
+	fmt.Println("  :schema <path> - Load schema for validation and type-aware SQL")
+	fmt.Println("  :file <path>   - Read JSON Logic from a file (for large inputs)")
+	fmt.Println("  :clear         - Clear the screen")
+	fmt.Println("  :quit          - Exit the REPL")
 	fmt.Println()
 	fmt.Printf("Current dialect: %s\n", getDialectName(currentDialect))
 	fmt.Println()

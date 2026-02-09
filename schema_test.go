@@ -124,8 +124,8 @@ func TestSchemaInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transpile with array field failed: %v", err)
 	}
-	// Should use array membership syntax: 'tag1' IN tags
-	expected := "WHERE 'tag1' IN tags"
+	// Should use dialect-specific array membership syntax (BigQuery uses IN UNNEST)
+	expected := "WHERE 'tag1' IN UNNEST(tags)"
 	if result != expected {
 		t.Errorf("Transpile() = %q, want %q", result, expected)
 	}

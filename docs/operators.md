@@ -260,6 +260,10 @@ WHERE CAST(-5 AS NUMERIC)
 WHERE country IN ('US', 'CA', 'MX')
 ```
 
+When the right-hand side is an array-typed field (with schema), `in` uses
+dialect-specific array membership syntax (e.g., BigQuery/Spanner use
+`value IN UNNEST(array)`; PostgreSQL uses `value = ANY(array)`).
+
 ### Map Array
 
 ```json

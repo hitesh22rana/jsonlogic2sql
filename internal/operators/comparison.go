@@ -30,6 +30,31 @@ func (c *ComparisonOperator) schema() SchemaProvider {
 	return c.config.Schema
 }
 
+// arrayMembershipSQL generates dialect-specific SQL for checking if a value exists in an array column.
+// BigQuery/Spanner: value IN UNNEST(array)
+// PostgreSQL: value = ANY(array)
+// DuckDB: list_contains(array, value)
+// ClickHouse: has(array, value).
+func (c *ComparisonOperator) arrayMembershipSQL(valueSQL, arraySQL string) string {
+	d := dialect.DialectUnspecified
+	if c.config != nil {
+		d = c.config.GetDialect()
+	}
+
+	//nolint:exhaustive // default handles unspecified and future dialects
+	switch d {
+	case dialect.DialectPostgreSQL:
+		return fmt.Sprintf("%s = ANY(%s)", valueSQL, arraySQL)
+	case dialect.DialectDuckDB:
+		return fmt.Sprintf("list_contains(%s, %s)", arraySQL, valueSQL)
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("has(%s, %s)", arraySQL, valueSQL)
+	default:
+		// BigQuery, Spanner, and fallback
+		return fmt.Sprintf("%s IN UNNEST(%s)", valueSQL, arraySQL)
+	}
+}
+
 // strposFunc returns the appropriate string position function call based on dialect.
 // BigQuery/Spanner/DuckDB: STRPOS(haystack, needle)
 // PostgreSQL: POSITION(needle IN haystack)
@@ -403,8 +428,8 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 			// Use schema to determine type if available
 			if c.schema() != nil && fieldName != "" {
 				if c.schema().IsArrayType(fieldName) {
-					// Array type: use array membership syntax
-					return fmt.Sprintf("%s IN %s", leftSQL, rightSQL), nil
+					// Array type: use dialect-specific array membership syntax
+					return c.arrayMembershipSQL(leftSQL, rightSQL), nil
 				} else if c.schema().IsStringType(fieldName) {
 					// String type: use string containment syntax
 					return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
@@ -419,7 +444,7 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 				return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 			}
 			// Otherwise, assume array membership
-			return fmt.Sprintf("%s IN %s", leftSQL, rightSQL), nil
+			return c.arrayMembershipSQL(leftSQL, rightSQL), nil
 		}
 	}
 
