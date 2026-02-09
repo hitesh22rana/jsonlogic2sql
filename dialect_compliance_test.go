@@ -224,6 +224,71 @@ func TestDialectSpecificArrayOperators(t *testing.T) {
 	}
 }
 
+// TestDialectSpecificInArrayField tests that the "in" operator with an array-typed field
+// produces dialect-specific SQL (UNNEST, ANY, list_contains, has).
+func TestDialectSpecificInArrayField(t *testing.T) {
+	type testCase struct {
+		name     string
+		input    string
+		expected map[Dialect]string
+	}
+
+	schema := NewSchema([]FieldSchema{
+		{Name: "test.tags", Type: FieldTypeArray},
+		{Name: "test.scores", Type: FieldTypeArray},
+	})
+
+	tests := []testCase{
+		{
+			name:  "in with array field variable (string value)",
+			input: `{"in": ["vip", {"var": "test.tags"}]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE 'vip' IN UNNEST(test.tags)",
+				DialectSpanner:    "WHERE 'vip' IN UNNEST(test.tags)",
+				DialectPostgreSQL: "WHERE 'vip' = ANY(test.tags)",
+				DialectDuckDB:     "WHERE list_contains(test.tags, 'vip')",
+				DialectClickHouse: "WHERE has(test.tags, 'vip')",
+			},
+		},
+		{
+			name:  "in with array field variable (numeric value)",
+			input: `{"in": [42, {"var": "test.scores"}]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE 42 IN UNNEST(test.scores)",
+				DialectSpanner:    "WHERE 42 IN UNNEST(test.scores)",
+				DialectPostgreSQL: "WHERE 42 = ANY(test.scores)",
+				DialectDuckDB:     "WHERE list_contains(test.scores, 42)",
+				DialectClickHouse: "WHERE has(test.scores, 42)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for d, expected := range tt.expected {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect: d,
+						Schema:  schema,
+					})
+					if err != nil {
+						t.Fatalf("Failed to create transpiler for %s: %v", d.String(), err)
+					}
+
+					result, err := tr.Transpile(tt.input)
+					if err != nil {
+						t.Errorf("[%s] Transpile() error = %v", d.String(), err)
+						return
+					}
+					if result != expected {
+						t.Errorf("[%s] Transpile() = %q, want %q", d.String(), result, expected)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestDialectSpecificStringFunctions tests string position functions across dialects.
 func TestDialectSpecificStringFunctions(t *testing.T) {
 	type testCase struct {

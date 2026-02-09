@@ -195,7 +195,7 @@ func TestSchemaTypeAwareBehavior(t *testing.T) {
 		{
 			name:      "in with array type field",
 			jsonLogic: `{"in": ["tag1", {"var": "tags"}]}`,
-			expected:  "WHERE 'tag1' IN tags",
+			expected:  "WHERE 'tag1' IN UNNEST(tags)",
 		},
 		{
 			name:      "in with string type field (string containment)",
@@ -518,7 +518,7 @@ func TestInOperatorWithSchemaIntegration(t *testing.T) {
 		{
 			name:      "in with array field uses IN syntax",
 			jsonLogic: `{"in": ["admin", {"var": "user.roles"}]}`,
-			expected:  "WHERE 'admin' IN user.roles",
+			expected:  "WHERE 'admin' IN UNNEST(user.roles)",
 		},
 		{
 			name:      "in with string field uses STRPOS",
