@@ -311,6 +311,8 @@ func TestDataOperator_convertVarName_rejectsPreQuoted(t *testing.T) {
 		{"double-quote quoted segment", `data."24h".tx`},
 		{"embedded backtick", "col`name"},
 		{"embedded double quote", `col"name`},
+		{"single-quote quoted segment", "data.'24h'.tx"},
+		{"embedded single quote", "col'name"},
 	}
 
 	for _, tt := range tests {

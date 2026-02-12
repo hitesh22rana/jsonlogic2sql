@@ -319,6 +319,10 @@ func TestNewSchema_RejectsQuotedFieldNames(t *testing.T) {
 			"backtick-wrapped segment",
 			[]FieldSchema{{Name: "history.`7d`.count", Type: FieldTypeNumber}},
 		},
+		{
+			"single quote in field name",
+			[]FieldSchema{{Name: "data.'24h'.tx.sum", Type: FieldTypeInteger}},
+		},
 	}
 
 	for _, tt := range tests {

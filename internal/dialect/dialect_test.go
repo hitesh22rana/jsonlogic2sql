@@ -145,6 +145,8 @@ func TestContainsQuoteCharacters(t *testing.T) {
 		{`"quoted"`, true},
 		{"has`tick", true},
 		{`has"quote`, true},
+		{"'quoted'", true},
+		{"has'single", true},
 	}
 
 	for _, tt := range tests {

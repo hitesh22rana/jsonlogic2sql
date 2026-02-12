@@ -363,7 +363,7 @@ Check if error has specific code.
 func NewSchema(fields []FieldSchema) (*Schema, error)
 ```
 
-Create a new schema from field definitions. Returns an error if any field name contains quote characters (backtick or double quote) — field names must be raw, unquoted identifiers.
+Create a new schema from field definitions. Returns an error if any field name contains quote characters (backtick, double quote, or single quote) — field names must be raw, unquoted identifiers.
 
 ### NewSchemaFromJSON
 

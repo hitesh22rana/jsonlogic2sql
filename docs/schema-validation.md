@@ -39,6 +39,8 @@ func main() {
 }
 ```
 
+**Note:** Field names must be raw, unquoted identifiers. `NewSchema` returns an error if any field name contains quote characters (backtick, double quote, or single quote). The transpiler handles identifier quoting automatically based on the target dialect.
+
 ## Loading Schema from JSON
 
 ```go
