@@ -156,11 +156,11 @@ When a schema is provided, the transpiler automatically coerces literal values t
 **Number to String** - When a string field is compared with numeric literals, the numbers are coerced to quoted strings:
 
 ```go
-// Schema: merchant_sector_code is string type
-sql, _ := transpiler.Transpile(`{"in": [{"var": "merchant_sector_code"}, [5960, 9000]]}`)
+// Schema: category_code is string type
+sql, _ := transpiler.Transpile(`{"in": [{"var": "category_code"}, [5960, 9000]]}`)
 fmt.Println(sql)
-// Output: WHERE merchant_sector_code IN ('5960', '9000')
-// Without schema: WHERE merchant_sector_code IN (5960, 9000) - would fail in BigQuery
+// Output: WHERE category_code IN ('5960', '9000')
+// Without schema: WHERE category_code IN (5960, 9000) - would fail in BigQuery
 ```
 
 **String to Number** - When a numeric field is compared with string literals that are valid numbers, the strings are coerced to unquoted numbers:
