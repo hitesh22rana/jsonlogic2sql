@@ -143,7 +143,7 @@ _, err := transpiler.Transpile(`{"unknownOp": [1, 2]}`)
 ### Field Not in Schema
 
 ```go
-schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "known_field", Type: jsonlogic2sql.FieldTypeString},
 })
 transpiler.SetSchema(schema)
@@ -155,7 +155,7 @@ _, err := transpiler.Transpile(`{"==": [{"var": "unknown_field"}, "test"]}`)
 ### Invalid Enum Value
 
 ```go
-schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "status", Type: jsonlogic2sql.FieldTypeEnum, AllowedValues: []string{"active", "pending"}},
 })
 transpiler.SetSchema(schema)
@@ -167,7 +167,7 @@ _, err := transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 ### Type Mismatch
 
 ```go
-schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "name", Type: jsonlogic2sql.FieldTypeString},
 })
 transpiler.SetSchema(schema)

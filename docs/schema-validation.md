@@ -14,7 +14,7 @@ import (
 
 func main() {
     // Create a schema with field definitions
-    schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+    schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
         {Name: "order.amount", Type: jsonlogic2sql.FieldTypeInteger},
         {Name: "order.status", Type: jsonlogic2sql.FieldTypeString},
         {Name: "user.verified", Type: jsonlogic2sql.FieldTypeBoolean},
@@ -90,7 +90,7 @@ When a schema is provided, operators perform strict type validation:
 ### Example
 
 ```go
-schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "amount", Type: jsonlogic2sql.FieldTypeInteger},
     {Name: "tags", Type: jsonlogic2sql.FieldTypeArray},
     {Name: "name", Type: jsonlogic2sql.FieldTypeString},
@@ -207,7 +207,7 @@ Enum fields allow you to define a fixed set of allowed values:
 
 ```go
 // Define schema with enum field
-schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "status", Type: jsonlogic2sql.FieldTypeEnum, AllowedValues: []string{"active", "pending", "cancelled"}},
     {Name: "priority", Type: jsonlogic2sql.FieldTypeEnum, AllowedValues: []string{"low", "medium", "high"}},
 })
@@ -241,7 +241,7 @@ _, err = transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 
 ```go
 // Schema creation
-schema := jsonlogic2sql.NewSchema(fields []FieldSchema)
+schema, err := jsonlogic2sql.NewSchema(fields []FieldSchema)
 schema, err := jsonlogic2sql.NewSchemaFromJSON(data []byte)
 schema, err := jsonlogic2sql.NewSchemaFromFile(filepath string)
 
