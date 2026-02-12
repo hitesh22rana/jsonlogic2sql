@@ -8,12 +8,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
-// validIdentifier matches standard SQL identifiers with optional dot-notation
-// for nested field access: letters, digits, underscores, and dots.
-var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
+// validIdentifierSegment matches a conservative identifier segment allowlist
+// used when no schema is configured.
+var validIdentifierSegment = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
 // validJSONNumberLiteral matches strict JSON numeric literals.
 // This prevents crafted json.Number values (from map/interface APIs) from being
@@ -252,19 +253,27 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 	return fmt.Sprintf("(%s) >= %d", nullCount, int(minCount)), nil
 }
 
-// convertVarName converts a JSON Logic variable name to SQL column name.
-// Preserves dot notation for nested properties: "user.verified" -> "user.verified".
-// When no schema is configured, validates that the name matches a safe SQL identifier
-// pattern to prevent injection via malicious var names.
+// convertVarName converts a JSON Logic variable name to a SQL column reference.
+// It splits the name on dots, quotes any segment that is not a valid unquoted SQL
+// identifier (e.g. starts with a digit like "24h"), and rejoins with dots.
+// When no schema is configured, it still validates each raw segment against a
+// conservative allowlist before quoting to avoid accepting arbitrary SQL text.
 func (d *DataOperator) convertVarName(varName string) (string, error) {
-	// When schema is set, it already validates field names - no extra check needed.
-	// When no schema, enforce identifier pattern as a safety net.
-	if d.schema() == nil {
-		if !validIdentifier.MatchString(varName) {
-			return "", fmt.Errorf("invalid identifier %q: must match [a-zA-Z_][a-zA-Z0-9_.]*", varName)
+	dl := dialect.DialectUnspecified
+	if d.config != nil {
+		dl = d.config.GetDialect()
+	}
+
+	segments := strings.Split(varName, ".")
+	for i, seg := range segments {
+		if d.schema() == nil && (seg == "" || !validIdentifierSegment.MatchString(seg)) {
+			return "", fmt.Errorf("invalid identifier %q: each segment must match [a-zA-Z0-9_]+", varName)
+		}
+		if dialect.NeedsQuoting(seg) {
+			segments[i] = dialect.QuoteIdentifierSegment(seg, dl)
 		}
 	}
-	return varName, nil
+	return strings.Join(segments, "."), nil
 }
 
 // getNumber extracts a number from an interface{} and returns it as float64.
