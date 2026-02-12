@@ -289,6 +289,96 @@ func TestDialectSpecificInArrayField(t *testing.T) {
 	}
 }
 
+// TestDialectSpecificIdentifierQuoting tests that numeric-leading path segments
+// are quoted with the correct dialect-specific character.
+func TestDialectSpecificIdentifierQuoting(t *testing.T) {
+	type testCase struct {
+		name     string
+		input    string
+		expected map[Dialect]string
+	}
+
+	tests := []testCase{
+		{
+			name:  "numeric-leading segment in comparison",
+			input: `{">=": [{"var": "fixture.windowed_metrics.24h.events.total"}, 50000]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE fixture.windowed_metrics.`24h`.events.total >= 50000",
+				DialectSpanner:    "WHERE fixture.windowed_metrics.`24h`.events.total >= 50000",
+				DialectPostgreSQL: `WHERE fixture.windowed_metrics."24h".events.total >= 50000`,
+				DialectDuckDB:     `WHERE fixture.windowed_metrics."24h".events.total >= 50000`,
+				DialectClickHouse: "WHERE fixture.windowed_metrics.`24h`.events.total >= 50000",
+			},
+		},
+		{
+			name:  "normal segments remain unquoted",
+			input: `{">": [{"var": "user.amount"}, 100]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE user.amount > 100",
+				DialectSpanner:    "WHERE user.amount > 100",
+				DialectPostgreSQL: "WHERE user.amount > 100",
+				DialectDuckDB:     "WHERE user.amount > 100",
+				DialectClickHouse: "WHERE user.amount > 100",
+			},
+		},
+		{
+			name:  "multiple numeric-leading segments",
+			input: `{"==": [{"var": "stats.7d.10m.count"}, 0]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE stats.`7d`.`10m`.count = 0",
+				DialectSpanner:    "WHERE stats.`7d`.`10m`.count = 0",
+				DialectPostgreSQL: `WHERE stats."7d"."10m".count = 0`,
+				DialectDuckDB:     `WHERE stats."7d"."10m".count = 0`,
+				DialectClickHouse: "WHERE stats.`7d`.`10m`.count = 0",
+			},
+		},
+		{
+			name:  "missing operator with numeric-leading segment",
+			input: `{"missing": "data.history.24h.tx.count"}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE data.history.`24h`.tx.count IS NULL",
+				DialectSpanner:    "WHERE data.history.`24h`.tx.count IS NULL",
+				DialectPostgreSQL: `WHERE data.history."24h".tx.count IS NULL`,
+				DialectDuckDB:     `WHERE data.history."24h".tx.count IS NULL`,
+				DialectClickHouse: "WHERE data.history.`24h`.tx.count IS NULL",
+			},
+		},
+		{
+			name:  "var with default and numeric-leading segment",
+			input: `{"==": [{"var": ["metrics.30d.total", 0]}, 0]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE COALESCE(metrics.`30d`.total, 0) = 0",
+				DialectSpanner:    "WHERE COALESCE(metrics.`30d`.total, 0) = 0",
+				DialectPostgreSQL: `WHERE COALESCE(metrics."30d".total, 0) = 0`,
+				DialectDuckDB:     `WHERE COALESCE(metrics."30d".total, 0) = 0`,
+				DialectClickHouse: "WHERE COALESCE(metrics.`30d`.total, 0) = 0",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for d, expected := range tt.expected {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspiler(d)
+					if err != nil {
+						t.Fatalf("Failed to create transpiler for %s: %v", d.String(), err)
+					}
+
+					result, err := tr.Transpile(tt.input)
+					if err != nil {
+						t.Errorf("[%s] Transpile() error = %v", d.String(), err)
+						return
+					}
+					if result != expected {
+						t.Errorf("[%s] Transpile() = %q, want %q", d.String(), result, expected)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestDialectSpecificStringFunctions tests string position functions across dialects.
 func TestDialectSpecificStringFunctions(t *testing.T) {
 	type testCase struct {
