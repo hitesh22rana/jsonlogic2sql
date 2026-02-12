@@ -37,9 +37,9 @@ type Schema struct {
 }
 
 // NewSchema creates a new schema from a slice of field schemas.
-// Returns an error if any field name contains quote characters (backtick or
-// double quote). Schema field names must be raw, unquoted identifiers —
-// the transpiler handles quoting automatically.
+// Returns an error if any field name contains quote characters (backtick,
+// double quote, or single quote). Schema field names must be raw, unquoted
+// identifiers — the transpiler handles quoting automatically.
 func NewSchema(fields []FieldSchema) (*Schema, error) {
 	s := &Schema{
 		fields: make(map[string]FieldSchema),
@@ -48,9 +48,8 @@ func NewSchema(fields []FieldSchema) (*Schema, error) {
 		for _, seg := range strings.Split(field.Name, ".") {
 			if dialect.ContainsQuoteCharacters(seg) {
 				return nil, fmt.Errorf(
-					"schema field %q contains quote characters in segment %q; "+
-						"use raw identifiers (e.g. \"24h\" not \"`24h`\") — "+
-						"the transpiler handles quoting automatically", field.Name, seg)
+					"schema field %q contains quote characters; "+
+						"use raw identifiers — the transpiler handles quoting automatically", field.Name)
 			}
 		}
 		s.fields[field.Name] = field

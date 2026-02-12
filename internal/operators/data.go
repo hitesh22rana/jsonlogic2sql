@@ -258,8 +258,8 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 // identifier (e.g. starts with a digit like "24h"), and rejoins with dots.
 // When no schema is configured, it still validates each raw segment against a
 // conservative allowlist before quoting to avoid accepting arbitrary SQL text.
-// Returns an error if any segment contains quote characters (backtick or double
-// quote), since the transpiler handles quoting automatically.
+// Returns an error if any segment contains quote characters (backtick, double
+// quote, or single quote), since the transpiler handles quoting automatically.
 func (d *DataOperator) convertVarName(varName string) (string, error) {
 	dl := dialect.DialectUnspecified
 	if d.config != nil {
@@ -269,8 +269,8 @@ func (d *DataOperator) convertVarName(varName string) (string, error) {
 	segments := strings.Split(varName, ".")
 	for i, seg := range segments {
 		if dialect.ContainsQuoteCharacters(seg) {
-			return "", fmt.Errorf("variable name segment %q contains quote characters; "+
-				"use raw identifiers (e.g. \"24h\") — the transpiler handles quoting automatically", seg)
+			return "", fmt.Errorf("variable name %q contains quote characters; "+
+				"use raw identifiers — the transpiler handles quoting automatically", varName)
 		}
 		if d.schema() == nil && (seg == "" || !validIdentifierSegment.MatchString(seg)) {
 			return "", fmt.Errorf("invalid identifier %q: each segment must match [a-zA-Z0-9_]+", varName)
