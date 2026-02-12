@@ -150,13 +150,14 @@ See [Parameterized Queries](parameterized-queries.md) for detailed documentation
 
 ## Variable Naming
 
-The transpiler preserves JSON Logic variable names as-is in the SQL output:
+The transpiler preserves JSON Logic variable names in the SQL output, with automatic quoting for segments that are not valid unquoted SQL identifiers:
 
 - Dot notation is preserved: `transaction.amount` → `transaction.amount`
 - Nested variables: `user.account.age` → `user.account.age`
 - Simple variables remain unchanged: `amount` → `amount`
-
-This allows for proper JSON column access in databases that support it (like PostgreSQL with JSONB columns).
+- Segments starting with a digit are quoted automatically:
+  - BigQuery/Spanner/ClickHouse: `fixture.history.24h.events.total` → `` fixture.history.`24h`.events.total ``
+  - PostgreSQL/DuckDB: `fixture.history.24h.events.total` → `fixture.history."24h".events.total`
 
 ## Next Steps
 
