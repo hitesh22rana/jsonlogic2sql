@@ -232,21 +232,23 @@ func TestDataOperator_ToSQL(t *testing.T) {
 func TestDataOperator_convertVarName(t *testing.T) {
 	op := NewDataOperator(nil)
 
-	t.Run("valid identifiers", func(t *testing.T) {
-		valid := []struct {
-			input    string
-			expected string
-		}{
-			{"amount", "amount"},
-			{"transaction.amount", "transaction.amount"},
-			{"user.account.age", "user.account.age"},
-			{"a.b.c.d", "a.b.c.d"},
-			{"simple", "simple"},
-			{"_private", "_private"},
-			{"field_name", "field_name"},
-			{"Field123", "Field123"},
-		}
+	valid := []struct {
+		input    string
+		expected string
+	}{
+		{"amount", "amount"},
+		{"transaction.amount", "transaction.amount"},
+		{"user.account.age", "user.account.age"},
+		{"a.b.c.d", "a.b.c.d"},
+		{"simple", "simple"},
+		{"_private", "_private"},
+		{"field_name", "field_name"},
+		{"Field123", "Field123"},
+		{"24h", "`24h`"},
+		{"data.24h.tx", "data.`24h`.tx"},
+	}
 
+	t.Run("valid identifiers", func(t *testing.T) {
 		for _, tt := range valid {
 			t.Run(tt.input, func(t *testing.T) {
 				result, err := op.convertVarName(tt.input)
@@ -267,9 +269,11 @@ func TestDataOperator_convertVarName(t *testing.T) {
 			"' OR 1=1 --",
 			"field name",
 			"field\ttab",
-			"123starts_with_number",
 			"field;name",
 			"(expression)",
+			"field..name",
+			".field",
+			"field.",
 		}
 
 		for _, input := range invalid {
@@ -285,15 +289,38 @@ func TestDataOperator_convertVarName(t *testing.T) {
 	t.Run("schema bypasses identifier validation", func(t *testing.T) {
 		schema := &dataSchemaProvider{}
 		opWithSchema := NewDataOperator(NewOperatorConfig(0, schema))
-		// With schema, even unusual names pass through (schema validates separately)
+		// With schema, unusual but raw names are quoted after schema validation.
 		result, err := opWithSchema.convertVarName("my field")
 		if err != nil {
 			t.Errorf("convertVarName with schema unexpected error: %v", err)
 		}
-		if result != "my field" {
-			t.Errorf("convertVarName with schema = %q, expected %q", result, "my field")
+		if result != "`my field`" {
+			t.Errorf("convertVarName with schema = %q, expected %q", result, "`my field`")
 		}
 	})
+}
+
+func TestDataOperator_convertVarName_rejectsPreQuoted(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"backtick quoted segment", "data.`24h`.tx"},
+		{"double-quote quoted segment", `data."24h".tx`},
+		{"embedded backtick", "col`name"},
+		{"embedded double quote", `col"name`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := op.convertVarName(tt.input)
+			if err == nil {
+				t.Errorf("convertVarName(%q) expected error for pre-quoted input, got nil", tt.input)
+			}
+		})
+	}
 }
 
 // dataSchemaProvider is a minimal schema provider for data operator tests.

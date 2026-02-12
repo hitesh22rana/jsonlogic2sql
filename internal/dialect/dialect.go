@@ -86,6 +86,13 @@ func NeedsQuoting(segment string) bool {
 	return false
 }
 
+// ContainsQuoteCharacters returns true if the segment contains backticks or double
+// quotes. These characters are used for identifier quoting and must not appear in
+// raw variable names — the transpiler handles quoting automatically.
+func ContainsQuoteCharacters(segment string) bool {
+	return strings.ContainsAny(segment, "`\"")
+}
+
 // QuoteIdentifierSegment wraps a single identifier segment with dialect-appropriate
 // quote characters. It also escapes any embedded quote characters within the segment.
 //   - BigQuery / Spanner / ClickHouse: backtick (`)

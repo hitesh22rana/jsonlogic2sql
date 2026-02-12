@@ -131,3 +131,27 @@ func TestQuoteIdentifierSegment(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsQuoteCharacters(t *testing.T) {
+	tests := []struct {
+		segment  string
+		expected bool
+	}{
+		{"normal", false},
+		{"24h", false},
+		{"_field", false},
+		{"", false},
+		{"`quoted`", true},
+		{`"quoted"`, true},
+		{"has`tick", true},
+		{`has"quote`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.segment, func(t *testing.T) {
+			if got := ContainsQuoteCharacters(tt.segment); got != tt.expected {
+				t.Errorf("ContainsQuoteCharacters(%q) = %v, want %v", tt.segment, got, tt.expected)
+			}
+		})
+	}
+}
