@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 )
 
 // FieldType represents the type of a field in the schema.
@@ -34,14 +37,25 @@ type Schema struct {
 }
 
 // NewSchema creates a new schema from a slice of field schemas.
-func NewSchema(fields []FieldSchema) *Schema {
+// Returns an error if any field name contains quote characters (backtick or
+// double quote). Schema field names must be raw, unquoted identifiers —
+// the transpiler handles quoting automatically.
+func NewSchema(fields []FieldSchema) (*Schema, error) {
 	s := &Schema{
 		fields: make(map[string]FieldSchema),
 	}
 	for _, field := range fields {
+		for _, seg := range strings.Split(field.Name, ".") {
+			if dialect.ContainsQuoteCharacters(seg) {
+				return nil, fmt.Errorf(
+					"schema field %q contains quote characters in segment %q; "+
+						"use raw identifiers (e.g. \"24h\" not \"`24h`\") — "+
+						"the transpiler handles quoting automatically", field.Name, seg)
+			}
+		}
 		s.fields[field.Name] = field
 	}
-	return s
+	return s, nil
 }
 
 // NewSchemaFromJSON creates a new schema from a JSON byte slice.
@@ -50,7 +64,7 @@ func NewSchemaFromJSON(data []byte) (*Schema, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, fmt.Errorf("invalid schema JSON: %w", err)
 	}
-	return NewSchema(fields), nil
+	return NewSchema(fields)
 }
 
 // NewSchemaFromFile loads a schema from a JSON file.

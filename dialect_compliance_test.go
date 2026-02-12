@@ -233,7 +233,7 @@ func TestDialectSpecificInArrayField(t *testing.T) {
 		expected map[Dialect]string
 	}
 
-	schema := NewSchema([]FieldSchema{
+	schema, _ := NewSchema([]FieldSchema{
 		{Name: "test.tags", Type: FieldTypeArray},
 		{Name: "test.scores", Type: FieldTypeArray},
 	})

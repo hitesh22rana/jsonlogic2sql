@@ -1670,7 +1670,7 @@ func TestNewTranspilerWithConfig(t *testing.T) {
 }
 
 func TestNewTranspilerWithConfig_WithSchema(t *testing.T) {
-	schema := NewSchema([]FieldSchema{
+	schema, _ := NewSchema([]FieldSchema{
 		{Name: "amount", Type: FieldTypeInteger},
 		{Name: "status", Type: FieldTypeString},
 	})
