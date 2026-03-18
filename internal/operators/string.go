@@ -159,11 +159,10 @@ func (s *StringOperator) handleSubstring(args []interface{}) (string, error) {
 	}
 
 	var substrFunc string
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch d {
 	case dialect.DialectClickHouse:
 		substrFunc = "substring"
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		substrFunc = "SUBSTR"
 	}
 

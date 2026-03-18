@@ -164,13 +164,13 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 	transformationWithElem := a.replaceElementReference(transformation)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformationWithElem, array), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformationWithElem, array), nil
 	}
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformationWithElem, array), nil
 }
 
 // handleFilter converts filter operator to SQL.
@@ -209,13 +209,13 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", conditionWithElem, array), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 	}
+	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 }
 
 // handleReduce converts reduce operator to SQL.
@@ -267,7 +267,6 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 		}
 
 		// Generate optimized aggregate SQL based on dialect
-		//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 		switch a.getDialect() {
 		case dialect.DialectClickHouse:
 			// ClickHouse: For field access, we need arrayMap first to extract the field
@@ -279,11 +278,14 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 			// initial + coalesce(arrayReduce('sum', array), 0)
 			return fmt.Sprintf("%s + coalesce(arrayReduce('%s', %s), 0)",
 				initial, strings.ToLower(pattern.function), array), nil
-		default:
+		case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 			// Standard SQL: initial + COALESCE((SELECT AGG(elem.field) FROM UNNEST(array) AS elem), 0)
 			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
 				initial, pattern.function, elemRef, array), nil
 		}
+		// Fallback for any future dialects
+		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
+			initial, pattern.function, elemRef, array), nil
 	}
 
 	// General case: evaluate reducer expression with element reference
@@ -298,15 +300,15 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	reducerWithElem = strings.ReplaceAll(reducerWithElem, AccumulatorVar, initial)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		// ClickHouse uses arrayFold for general reduction (ClickHouse 22.8+)
 		return fmt.Sprintf("arrayFold((acc, elem) -> %s, %s, %s)", reducerWithElem, array, initial), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL using a subquery
 		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
 	}
+	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
 }
 
 // aggregatePattern represents a detected aggregate pattern with optional field suffix.
@@ -434,14 +436,14 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("arrayAll(elem -> %s, %s)", conditionWithElem, array), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: NOT EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE NOT (condition))
 		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s))", array, conditionWithElem), nil
 	}
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s))", array, conditionWithElem), nil
 }
 
 // handleSome converts some operator to SQL.
@@ -481,14 +483,14 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("arrayExists(elem -> %s, %s)", conditionWithElem, array), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 	}
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 }
 
 // handleNone converts none operator to SQL.
@@ -528,14 +530,14 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
-	//nolint:exhaustive // default handles BigQuery/Spanner/PostgreSQL/DuckDB
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", conditionWithElem, array), nil
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: NOT EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
 		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 	}
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
 }
 
 // handleMerge converts merge operator to SQL.
