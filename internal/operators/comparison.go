@@ -153,13 +153,36 @@ func (c *ComparisonOperator) coerceValueForComparison(value interface{}, fieldNa
 	}
 
 	// Coerce number → string for string fields
+	// Handles float64 (from JSON unmarshal) and all Go integer types (from TranspileFromMap)
 	if c.schema().IsStringType(fieldName) {
-		if numVal, ok := value.(float64); ok {
-			// Format without decimal for whole numbers (5960.0 → "5960")
-			if numVal == float64(int64(numVal)) {
-				return fmt.Sprintf("%d", int64(numVal))
+		switch v := value.(type) {
+		case float64:
+			if v == float64(int64(v)) {
+				return fmt.Sprintf("%d", int64(v))
 			}
-			return fmt.Sprintf("%g", numVal)
+			return fmt.Sprintf("%g", v)
+		case float32:
+			return fmt.Sprintf("%g", v)
+		case int:
+			return strconv.Itoa(v)
+		case int8:
+			return strconv.FormatInt(int64(v), 10)
+		case int16:
+			return strconv.FormatInt(int64(v), 10)
+		case int32:
+			return strconv.FormatInt(int64(v), 10)
+		case int64:
+			return strconv.FormatInt(v, 10)
+		case uint:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint8:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint16:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint32:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint64:
+			return strconv.FormatUint(v, 10)
 		}
 		return value
 	}
