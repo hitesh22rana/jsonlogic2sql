@@ -264,6 +264,18 @@ When the right-hand side is an array-typed field (with schema), `in` uses
 dialect-specific array membership syntax (e.g., BigQuery/Spanner use
 `value IN UNNEST(array)`; PostgreSQL uses `value = ANY(array)`).
 
+When a schema is provided, array elements are automatically coerced to match the field type. For example, numeric values in the array are quoted as strings when the field is a string type:
+
+```json
+// Schema: merchant_code is string type
+{"in": [{"var": "merchant_code"}, [5960, 9000]]}
+```
+```sql
+WHERE merchant_code IN ('5960', '9000')
+```
+
+See [Type Coercion](schema-validation.md#type-coercion) for details.
+
 ### Map Array
 
 ```json

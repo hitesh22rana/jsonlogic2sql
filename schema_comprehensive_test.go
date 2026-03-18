@@ -1095,6 +1095,279 @@ func TestEnumWithComplexExpressions(t *testing.T) {
 	}
 }
 
+// TestTypeCoercionForInOperator verifies that array elements in the "in" operator are coerced
+// to match the field type. Numbers are quoted for string fields, and string numbers are
+// unquoted for numeric fields. This prevents type errors in strict-typing databases like BigQuery.
+func TestTypeCoercionForInOperator(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "code", Type: FieldTypeString},
+		{Name: "status", Type: FieldTypeString},
+		{Name: "bio", Type: FieldTypeString},
+		{Name: "amount", Type: FieldTypeInteger},
+		{Name: "price", Type: FieldTypeNumber},
+		{Name: "active", Type: FieldTypeBoolean},
+	})
+
+	t.Run("string field with numeric array elements should quote values", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"code"},[5960,9000]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code IN ('5960', '9000')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string field with mixed array elements should coerce numbers", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"status"},["active",123,"pending"]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE status IN ('active', '123', 'pending')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("numeric field with string array elements should unquote values", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"amount"},["100","200","300"]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE amount IN (100, 200, 300)"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("numeric field with numeric array elements stays unchanged", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"amount"},[100,200,300]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE amount IN (100, 200, 300)"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string field with string array elements stays unchanged", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"status"},["active","pending"]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE status IN ('active', 'pending')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("no schema should not coerce", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		// No schema set
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"code"},[5960,9000]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code IN (5960, 9000)"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string field with float values should quote correctly", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[{"var":"status"},[1.5,2.7]]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE status IN ('1.5', '2.7')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string containment with number literal coerces to string", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[123,{"var":"bio"}]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE STRPOS(bio, '123') > 0"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string containment with float literal coerces to string", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":[3.14,{"var":"bio"}]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE STRPOS(bio, '3.14') > 0"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("string containment with string literal stays unchanged", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.Transpile(`{"in":["hello",{"var":"bio"}]}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE STRPOS(bio, 'hello') > 0"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("coercion works across all dialects", func(t *testing.T) {
+		dialects := []Dialect{
+			DialectBigQuery,
+			DialectSpanner,
+			DialectPostgreSQL,
+			DialectDuckDB,
+			DialectClickHouse,
+		}
+		for _, d := range dialects {
+			transpiler, _ := NewTranspiler(d)
+			transpiler.SetSchema(schema)
+
+			result, err := transpiler.Transpile(`{"in":[{"var":"code"},[5960,9000]]}`)
+			if err != nil {
+				t.Fatalf("[%s] Unexpected error: %v", d, err)
+			}
+			expected := "WHERE code IN ('5960', '9000')"
+			if result != expected {
+				t.Errorf("[%s] Expected: %s\nGot: %s", d, expected, result)
+			}
+		}
+	})
+
+	// TranspileFromMap tests: Go native int types bypass JSON unmarshaling (float64)
+	t.Run("TranspileFromMap: string field with Go int array", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.TranspileFromMap(map[string]interface{}{
+			"in": []interface{}{
+				map[string]interface{}{"var": "code"},
+				[]interface{}{5960, 9000},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code IN ('5960', '9000')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("TranspileFromMap: string field with Go int64 array", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.TranspileFromMap(map[string]interface{}{
+			"in": []interface{}{
+				map[string]interface{}{"var": "code"},
+				[]interface{}{int64(5960), int64(9000)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code IN ('5960', '9000')"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("TranspileFromMap: int in string var (containment)", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.TranspileFromMap(map[string]interface{}{
+			"in": []interface{}{
+				123,
+				map[string]interface{}{"var": "bio"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE STRPOS(bio, '123') > 0"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("TranspileFromMap: string field == Go int", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.TranspileFromMap(map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": "code"},
+				5960,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code = '5960'"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("TranspileFromMap: integer field with Go string array", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+
+		result, err := transpiler.TranspileFromMap(map[string]interface{}{
+			"in": []interface{}{
+				map[string]interface{}{"var": "amount"},
+				[]interface{}{"100", "200"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE amount IN (100, 200)"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+}
+
 // TestTypeCoercionForComparisons verifies that string literals are coerced to appropriate types
 // based on the field being compared. This ensures proper SQL output like "field >= 50000"
 // instead of "field >= '50000'" when comparing an integer field with a string value.

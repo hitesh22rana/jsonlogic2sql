@@ -41,7 +41,6 @@ func (c *ComparisonOperator) arrayMembershipSQL(valueSQL, arraySQL string) strin
 		d = c.config.GetDialect()
 	}
 
-	//nolint:exhaustive // default handles unspecified and future dialects
 	switch d {
 	case dialect.DialectPostgreSQL:
 		return fmt.Sprintf("%s = ANY(%s)", valueSQL, arraySQL)
@@ -49,10 +48,11 @@ func (c *ComparisonOperator) arrayMembershipSQL(valueSQL, arraySQL string) strin
 		return fmt.Sprintf("list_contains(%s, %s)", arraySQL, valueSQL)
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("has(%s, %s)", arraySQL, valueSQL)
-	default:
-		// BigQuery, Spanner, and fallback
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner:
 		return fmt.Sprintf("%s IN UNNEST(%s)", valueSQL, arraySQL)
 	}
+	// Fallback for any future dialects
+	return fmt.Sprintf("%s IN UNNEST(%s)", valueSQL, arraySQL)
 }
 
 // strposFunc returns the appropriate string position function call based on dialect.
@@ -65,15 +65,16 @@ func (c *ComparisonOperator) strposFunc(haystack, needle string) string {
 		d = c.config.GetDialect()
 	}
 
-	//nolint:exhaustive // default handles BigQuery/Spanner/DuckDB
 	switch d {
 	case dialect.DialectPostgreSQL:
 		return fmt.Sprintf("POSITION(%s IN %s)", needle, haystack)
 	case dialect.DialectClickHouse:
 		return fmt.Sprintf("position(%s, %s)", haystack, needle)
-	default:
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectDuckDB:
 		return fmt.Sprintf("STRPOS(%s, %s)", haystack, needle)
 	}
+	// Fallback for any future dialects
+	return fmt.Sprintf("STRPOS(%s, %s)", haystack, needle)
 }
 
 // validateOrderingOperand checks if a field used in an ordering comparison is of a valid type
@@ -128,27 +129,62 @@ func (c *ComparisonOperator) extractFieldName(varName interface{}) string {
 
 // coerceValueForComparison coerces a literal value based on the type of the field being compared.
 // If the field is numeric and the value is a string that represents a number, it returns the unquoted number.
-// This ensures proper SQL comparisons like "field >= 50000" instead of "field >= '50000'".
+// If the field is a string and the value is a number, it returns the number as a string so it gets quoted.
+// This ensures proper SQL comparisons like "field >= 50000" instead of "field >= '50000'"
+// and "string_field IN ('5960', '9000')" instead of "string_field IN (5960, 9000)".
 func (c *ComparisonOperator) coerceValueForComparison(value interface{}, fieldName string) interface{} {
 	if c.schema() == nil || fieldName == "" {
 		return value
 	}
 
-	// Only coerce if the field is a numeric type
-	if !c.schema().IsNumericType(fieldName) {
+	// Coerce string → number for numeric fields
+	if c.schema().IsNumericType(fieldName) {
+		if strVal, ok := value.(string); ok {
+			// Try to parse as integer first
+			if intVal, err := strconv.ParseInt(strVal, 10, 64); err == nil {
+				return intVal
+			}
+			// Try to parse as float
+			if floatVal, err := strconv.ParseFloat(strVal, 64); err == nil {
+				return floatVal
+			}
+		}
 		return value
 	}
 
-	// If value is a string, try to parse it as a number
-	if strVal, ok := value.(string); ok {
-		// Try to parse as integer first
-		if intVal, err := strconv.ParseInt(strVal, 10, 64); err == nil {
-			return intVal
+	// Coerce number → string for string fields
+	// Handles float64 (from JSON unmarshal) and all Go integer types (from TranspileFromMap)
+	if c.schema().IsStringType(fieldName) {
+		switch v := value.(type) {
+		case float64:
+			if v == float64(int64(v)) {
+				return fmt.Sprintf("%d", int64(v))
+			}
+			return fmt.Sprintf("%g", v)
+		case float32:
+			return fmt.Sprintf("%g", v)
+		case int:
+			return strconv.Itoa(v)
+		case int8:
+			return strconv.FormatInt(int64(v), 10)
+		case int16:
+			return strconv.FormatInt(int64(v), 10)
+		case int32:
+			return strconv.FormatInt(int64(v), 10)
+		case int64:
+			return strconv.FormatInt(v, 10)
+		case uint:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint8:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint16:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint32:
+			return strconv.FormatUint(uint64(v), 10)
+		case uint64:
+			return strconv.FormatUint(v, 10)
 		}
-		// Try to parse as float
-		if floatVal, err := strconv.ParseFloat(strVal, 64); err == nil {
-			return floatVal
-		}
+		return value
 	}
 
 	return value
@@ -431,8 +467,14 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 					// Array type: use dialect-specific array membership syntax
 					return c.arrayMembershipSQL(leftSQL, rightSQL), nil
 				} else if c.schema().IsStringType(fieldName) {
+					// Coerce left side literal to string if needed (e.g., 123 → '123')
+					coercedLeft := c.coerceValueForComparison(leftOriginal, fieldName)
+					coercedLeftSQL, err := c.valueToSQL(coercedLeft)
+					if err != nil {
+						return "", fmt.Errorf("invalid left operand after coercion: %w", err)
+					}
 					// String type: use string containment syntax
-					return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+					return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, coercedLeftSQL)), nil
 				}
 			}
 
@@ -460,6 +502,13 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 				if err := c.validateEnumValue(item, leftFieldName); err != nil {
 					return "", err
 				}
+			}
+		}
+
+		// Apply type coercion based on schema for array elements
+		if leftFieldName != "" && c.schema() != nil {
+			for i, item := range arr {
+				arr[i] = c.coerceValueForComparison(item, leftFieldName)
 			}
 		}
 
