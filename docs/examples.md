@@ -347,6 +347,20 @@ WHERE CAST(-5 AS NUMERIC)
 WHERE country IN ('US', 'CA', 'MX')
 ```
 
+### In Array with Type Coercion (Schema)
+
+When a schema is provided, array elements are coerced to match the field type:
+
+```json
+// Schema: sector_code is string type, amount is integer type
+{"in": [{"var": "sector_code"}, [5960, 9000]]}
+{"in": [{"var": "amount"}, ["100", "200", "300"]]}
+```
+```sql
+WHERE sector_code IN ('5960', '9000')
+WHERE amount IN (100, 200, 300)
+```
+
 ### String Containment
 
 ```json
