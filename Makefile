@@ -16,7 +16,7 @@ build:
 build/wasm:
 	@echo "Building WASM binary..."
 	@mkdir -p demo/wasm
-	@GOOS=js GOARCH=wasm go build -trimpath -o demo/wasm/jsonlogic2sql.wasm ./demo/wasm/
+	@GOOS=js GOARCH=wasm go build -trimpath -buildvcs=false -ldflags="-buildid=" -o demo/wasm/jsonlogic2sql.wasm ./demo/wasm/
 	@cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" demo/wasm/
 	@echo "WASM built at demo/wasm/jsonlogic2sql.wasm ($$(du -h demo/wasm/jsonlogic2sql.wasm | cut -f1 | xargs))"
 
