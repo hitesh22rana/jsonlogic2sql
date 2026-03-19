@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>jsonlogic2sql - WASM Playground</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+        h1 { font-size: 1.5rem; margin-bottom: 4px; color: #58a6ff; }
+        .subtitle { color: #8b949e; font-size: 0.85rem; margin-bottom: 20px; }
+        .container { max-width: 960px; margin: 0 auto; }
+        .row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; }
+        label { color: #8b949e; font-size: 0.8rem; min-width: 60px; }
+        select, button { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 0.85rem; cursor: pointer; }
+        button:hover { border-color: #58a6ff; background: #21262d; }
+        .editor { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.82rem; color: #c9d1d9; width: 100%; min-height: 80px; resize: vertical; line-height: 1.5; tab-size: 2; }
+        .editor.small { min-height: 48px; }
+        .output { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; min-height: 48px; white-space: pre-wrap; word-break: break-all; }
+        .output.error { color: #f85149; border-color: #f8514933; }
+        .output.success { color: #7ee787; border-color: #7ee78733; }
+        .output.condition { color: #d2a8ff; border-color: #d2a8ff33; }
+        .samples { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+        .sample-btn { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 16px; padding: 4px 12px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
+        .sample-btn:hover { background: #30363d; color: #c9d1d9; border-color: #58a6ff; }
+        .sample-btn.active { background: #1f6feb22; color: #58a6ff; border-color: #58a6ff; }
+        .section-label { color: #8b949e; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+        .section-label .badge { background: #21262d; color: #58a6ff; border-radius: 10px; padding: 1px 8px; font-size: 0.7rem; }
+        .section-label .badge.on { background: #1f6feb33; color: #58a6ff; }
+        .section-label .badge.off { background: #21262d; color: #8b949e; }
+        .status { font-size: 0.75rem; color: #8b949e; margin-top: 8px; }
+        .status .hl { color: #58a6ff; }
+        .loading { color: #d29922; text-align: center; padding: 40px; }
+        #app { display: none; }
+        .collapsible { overflow: hidden; transition: max-height 0.2s ease; }
+        .collapsible.collapsed { max-height: 0; }
+        .toggle-btn { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 0.75rem; padding: 0; text-decoration: underline; }
+        .toggle-btn:hover { color: #79c0ff; }
+        .schema-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+        .file-label { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
+        .file-label:hover { border-color: #58a6ff; color: #c9d1d9; }
+        .clear-btn { background: #21262d; color: #f85149; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; font-size: 0.75rem; cursor: pointer; }
+        .clear-btn:hover { border-color: #f85149; }
+        .multi-output { display: grid; grid-template-columns: 1fr; gap: 8px; }
+        .dialect-output { display: flex; gap: 8px; align-items: flex-start; }
+        .dialect-output .dialect-tag { background: #21262d; color: #8b949e; border-radius: 4px; padding: 2px 8px; font-size: 0.7rem; min-width: 80px; text-align: center; flex-shrink: 0; margin-top: 2px; }
+        .dialect-output .sql-text { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.82rem; color: #7ee787; word-break: break-all; }
+        .tabs { display: flex; gap: 0; margin-bottom: 12px; border-bottom: 1px solid #30363d; }
+        .tab { background: none; border: none; border-bottom: 2px solid transparent; color: #8b949e; padding: 8px 16px; font-size: 0.82rem; cursor: pointer; }
+        .tab:hover { color: #c9d1d9; }
+        .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+        .hidden { display: none; }
+        .field-count { color: #58a6ff; }
+        hr { border: none; border-top: 1px solid #21262d; margin: 16px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>jsonlogic2sql</h1>
+        <p class="subtitle">Transpile JSONLogic to SQL - running in your browser via WASM</p>
+
+        <div id="loading" class="loading">Loading WASM module...</div>
+
+        <div id="app">
+            <!-- Dialect -->
+            <div class="row">
+                <label>Dialect</label>
+                <select id="dialect">
+                    <option value="bigquery" selected>BigQuery</option>
+                    <option value="spanner">Spanner</option>
+                    <option value="postgresql">PostgreSQL</option>
+                    <option value="duckdb">DuckDB</option>
+                    <option value="clickhouse">ClickHouse</option>
+                </select>
+                <label style="min-width: auto;">
+                    <input type="checkbox" id="allDialects"> Compare all dialects
+                </label>
+            </div>
+
+            <!-- Schema -->
+            <div class="section-label">
+                Schema
+                <span class="badge off" id="schema-badge">off</span>
+                <button class="toggle-btn" id="schema-toggle">show</button>
+            </div>
+            <div class="collapsible collapsed" id="schema-section">
+                <div class="schema-controls">
+                    <label class="file-label" for="schema-file">Import JSON file</label>
+                    <input type="file" id="schema-file" accept=".json" style="display:none;">
+                    <button class="sample-btn" id="schema-sample-btn">Load sample schema</button>
+                    <button class="clear-btn" id="schema-clear-btn">Clear schema</button>
+                </div>
+                <textarea id="schema-input" class="editor small" spellcheck="false" placeholder='[{"name": "field.name", "type": "string"}, ...]'></textarea>
+                <div id="schema-status" style="font-size: 0.72rem; color: #8b949e; margin-top: 4px; margin-bottom: 8px;"></div>
+            </div>
+
+            <hr>
+
+            <!-- Samples -->
+            <div class="section-label">Samples</div>
+            <div class="samples" id="samples"></div>
+
+            <!-- Tabs: WHERE vs Condition -->
+            <div class="tabs">
+                <button class="tab active" data-mode="where">WHERE clause</button>
+                <button class="tab" data-mode="condition">Condition only</button>
+            </div>
+
+            <!-- Input -->
+            <div class="section-label">JSONLogic Input</div>
+            <textarea id="input" class="editor" spellcheck="false">{"and": [{">": [{"var": "amount"}, 5000]}, {"==": [{"var": "status"}, "pending"]}]}</textarea>
+
+            <!-- Output -->
+            <div style="margin-top: 12px;">
+                <div class="section-label">SQL Output</div>
+                <div id="output" class="output success"></div>
+                <div id="multi-output" class="multi-output hidden"></div>
+            </div>
+
+            <div class="status">
+                WASM: <span class="hl" id="wasm-size">-</span> |
+                Transpile: <span class="hl" id="transpile-time">-</span> |
+                Schema: <span class="hl" id="schema-field-count">none</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script>
+        const go = new Go();
+        let transpilerID = null;
+        let currentMode = 'where';
+        let schemaJSON = null;
+
+        const allDialectsList = ['bigquery', 'spanner', 'postgresql', 'duckdb', 'clickhouse'];
+        const dialectLabels = { bigquery: 'BigQuery', spanner: 'Spanner', postgresql: 'PostgreSQL', duckdb: 'DuckDB', clickhouse: 'ClickHouse' };
+
+        function createTranspiler() {
+            const dialect = document.getElementById('dialect').value;
+            if (transpilerID !== null) {
+                jsonlogic2sql.destroyTranspiler(transpilerID);
+            }
+            const result = jsonlogic2sql.newTranspiler(dialect);
+            if (result.error) { showError(result.error); return; }
+            transpilerID = result.id;
+            if (schemaJSON) applySchema(schemaJSON);
+            doTranspile();
+        }
+
+        function applySchema(json) {
+            if (transpilerID === null) return;
+            const result = jsonlogic2sql.setSchema(transpilerID, json);
+            const statusEl = document.getElementById('schema-status');
+            const badgeEl = document.getElementById('schema-badge');
+            const countEl = document.getElementById('schema-field-count');
+            if (result.error) {
+                statusEl.textContent = 'Error: ' + result.error;
+                statusEl.style.color = '#f85149';
+                badgeEl.textContent = 'error'; badgeEl.className = 'badge off';
+                countEl.textContent = 'error';
+                schemaJSON = null;
+            } else {
+                try {
+                    const fields = JSON.parse(json);
+                    const n = fields.length;
+                    statusEl.textContent = n + ' field' + (n !== 1 ? 's' : '') + ' loaded';
+                    statusEl.style.color = '#7ee787';
+                    badgeEl.textContent = n + ' fields'; badgeEl.className = 'badge on';
+                    countEl.textContent = n + ' fields';
+                    schemaJSON = json;
+                } catch (_) {
+                    statusEl.textContent = 'Schema applied';
+                    statusEl.style.color = '#7ee787';
+                }
+            }
+        }
+
+        function clearSchema() {
+            schemaJSON = null;
+            document.getElementById('schema-input').value = '';
+            document.getElementById('schema-status').textContent = '';
+            document.getElementById('schema-badge').textContent = 'off';
+            document.getElementById('schema-badge').className = 'badge off';
+            document.getElementById('schema-field-count').textContent = 'none';
+            createTranspiler();
+        }
+
+        function doTranspile() {
+            const input = document.getElementById('input').value.trim();
+            if (!input) {
+                document.getElementById('output').textContent = '';
+                document.getElementById('output').className = 'output';
+                document.getElementById('multi-output').innerHTML = '';
+                return;
+            }
+            try { JSON.parse(input); } catch (e) { showError('Invalid JSON: ' + e.message); return; }
+            document.getElementById('allDialects').checked ? doTranspileAll(input) : doTranspileSingle(input);
+        }
+
+        function doTranspileSingle(input) {
+            if (transpilerID === null) return;
+            document.getElementById('output').classList.remove('hidden');
+            document.getElementById('multi-output').classList.add('hidden');
+            const start = performance.now();
+            const fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+            const result = jsonlogic2sql[fn](transpilerID, input);
+            document.getElementById('transpile-time').textContent = (performance.now() - start).toFixed(2) + 'ms';
+            const output = document.getElementById('output');
+            if (result.error) { showError(result.error); }
+            else { output.textContent = result.sql; output.className = 'output ' + (currentMode === 'condition' ? 'condition' : 'success'); }
+        }
+
+        function doTranspileAll(input) {
+            document.getElementById('output').classList.add('hidden');
+            const multi = document.getElementById('multi-output');
+            multi.classList.remove('hidden'); multi.innerHTML = '';
+            const start = performance.now();
+            for (const d of allDialectsList) {
+                const t = jsonlogic2sql.newTranspiler(d);
+                if (t.error) continue;
+                if (schemaJSON) jsonlogic2sql.setSchema(t.id, schemaJSON);
+                const fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+                const result = jsonlogic2sql[fn](t.id, input);
+                jsonlogic2sql.destroyTranspiler(t.id);
+                const row = document.createElement('div'); row.className = 'dialect-output';
+                row.innerHTML = `<span class="dialect-tag">${dialectLabels[d]}</span><span class="sql-text">${result.error ? '<span style="color:#f85149">' + result.error + '</span>' : result.sql}</span>`;
+                multi.appendChild(row);
+            }
+            document.getElementById('transpile-time').textContent = (performance.now() - start).toFixed(2) + 'ms (5 dialects)';
+        }
+
+        function showError(msg) {
+            const output = document.getElementById('output');
+            output.textContent = msg; output.className = 'output error';
+            output.classList.remove('hidden');
+            document.getElementById('multi-output').classList.add('hidden');
+        }
+
+        function loadSamples() {
+            const samples = JSON.parse(jsonlogic2sql.getSamples());
+            const container = document.getElementById('samples');
+            samples.forEach(s => {
+                const btn = document.createElement('button');
+                btn.className = 'sample-btn'; btn.textContent = s.name;
+                btn.onclick = () => {
+                    document.getElementById('input').value = JSON.stringify(JSON.parse(s.jsonLogic), null, 2);
+                    container.querySelectorAll('.sample-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    doTranspile();
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        document.getElementById('input').addEventListener('input', () => {
+            document.querySelectorAll('#samples .sample-btn').forEach(b => b.classList.remove('active'));
+            doTranspile();
+        });
+        document.getElementById('dialect').addEventListener('change', createTranspiler);
+        document.getElementById('allDialects').addEventListener('change', doTranspile);
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active'); currentMode = tab.dataset.mode; doTranspile();
+            });
+        });
+        document.getElementById('schema-toggle').addEventListener('click', () => {
+            const section = document.getElementById('schema-section');
+            const btn = document.getElementById('schema-toggle');
+            section.classList.toggle('collapsed');
+            btn.textContent = section.classList.contains('collapsed') ? 'show' : 'hide';
+        });
+        document.getElementById('schema-file').addEventListener('change', (e) => {
+            const file = e.target.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                document.getElementById('schema-input').value = ev.target.result;
+                applySchema(ev.target.result); doTranspile();
+            };
+            reader.readAsText(file);
+        });
+        document.getElementById('schema-input').addEventListener('input', () => {
+            const text = document.getElementById('schema-input').value.trim();
+            if (!text) { clearSchema(); return; }
+            applySchema(text); doTranspile();
+        });
+        document.getElementById('schema-sample-btn').addEventListener('click', () => {
+            const sample = JSON.stringify([
+                { name: "amount", type: "integer" }, { name: "status", type: "string" },
+                { name: "country", type: "string" }, { name: "user.verified", type: "boolean" },
+                { name: "user.roles", type: "array" }, { name: "user.age", type: "integer" },
+                { name: "merchant_code", type: "string" }, { name: "price", type: "number" },
+                { name: "tags", type: "array" }, { name: "description", type: "string" }
+            ], null, 2);
+            document.getElementById('schema-input').value = sample;
+            applySchema(sample); doTranspile();
+        });
+        document.getElementById('schema-clear-btn').addEventListener('click', clearSchema);
+
+        async function init() {
+            try {
+                const resp = await fetch('jsonlogic2sql.wasm');
+                const wasmBytes = await resp.arrayBuffer();
+                document.getElementById('wasm-size').textContent = (wasmBytes.byteLength / 1024 / 1024).toFixed(1) + ' MB';
+                const result = await WebAssembly.instantiate(wasmBytes, go.importObject);
+                go.run(result.instance);
+            } catch (e) {
+                document.getElementById('loading').textContent = 'Failed to load WASM: ' + e.message;
+                return;
+            }
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('app').style.display = 'block';
+            loadSamples(); createTranspiler();
+        }
+        init();
+    </script>
+</body>
+</html>
