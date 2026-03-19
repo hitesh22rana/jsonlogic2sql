@@ -1,4 +1,4 @@
-.PHONY: build test test-verbose lint lint/fix run clean help
+.PHONY: build build/wasm test test-verbose lint lint/fix run clean help
 
 # Default target
 all: test build
@@ -8,6 +8,14 @@ build:
 	@echo "Building REPL binary..."
 	@go build -trimpath -buildvcs=false -ldflags="-buildid=" -o bin/repl ./cmd/repl
 	@echo "Binary built at bin/repl"
+
+# Build WASM binary for browser demo
+build/wasm:
+	@echo "Building WASM binary..."
+	@mkdir -p demo/wasm
+	@GOOS=js GOARCH=wasm go build -trimpath -o demo/wasm/jsonlogic2sql.wasm ./demo/wasm/
+	@cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" demo/wasm/
+	@echo "WASM built at demo/wasm/jsonlogic2sql.wasm ($$(du -h demo/wasm/jsonlogic2sql.wasm | cut -f1 | xargs))"
 
 # Run all tests
 test:
@@ -41,6 +49,7 @@ run: build
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf bin/
+	@rm -f demo/wasm/jsonlogic2sql.wasm demo/wasm/jsonlogic2sql.wasm.gz demo/wasm/wasm_exec.js
 	@go clean
 
 # Install dependencies
@@ -77,6 +86,7 @@ bench:
 help:
 	@echo "Available targets:"
 	@echo "  build        - Build the REPL binary"
+	@echo "  build/wasm   - Build WASM binary for browser demo"
 	@echo "  test         - Run all tests"
 	@echo "  test-verbose - Run tests with verbose output"
 	@echo "  lint         - Run linter"
