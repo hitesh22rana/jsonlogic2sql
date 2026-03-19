@@ -1,3 +1,6 @@
+export GOPATH := $(shell go env GOPATH)
+export PATH := $(PATH):$(GOPATH)/bin
+
 .PHONY: build build/wasm test test-verbose lint lint/fix run clean help
 
 # Default target
@@ -74,7 +77,7 @@ security:
 	@if command -v gosec >/dev/null 2>&1; then \
 		gosec ./...; \
 	else \
-		echo "gosec not found. Install it with: go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest"; \
+		echo "gosec not found. Install it with: go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
 	fi
 
 # Benchmark tests

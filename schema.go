@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // FieldType represents the type of a field in the schema.
@@ -53,8 +54,8 @@ func NewSchemaFromJSON(data []byte) (*Schema, error) {
 }
 
 // NewSchemaFromFile loads a schema from a JSON file.
-func NewSchemaFromFile(filepath string) (*Schema, error) {
-	data, err := os.ReadFile(filepath)
+func NewSchemaFromFile(path string) (*Schema, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read schema file: %w", err)
 	}

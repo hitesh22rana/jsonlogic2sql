@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql"
@@ -219,7 +220,7 @@ func promptSchema(scanner *bufio.Scanner) *jsonlogic2sql.Schema {
 		return nil
 	}
 
-	data, err := os.ReadFile(schemaPath)
+	data, err := os.ReadFile(filepath.Clean(schemaPath))
 	if err != nil {
 		fmt.Printf("Error reading schema file: %v\n\n", err)
 		return nil
@@ -277,7 +278,7 @@ func handleFileInput(parts []string, transpiler *jsonlogic2sql.Transpiler) {
 	}
 
 	filePath := parts[1]
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		fmt.Printf("Error reading file: %v\n", err)
 		return
@@ -330,7 +331,7 @@ func handleSchemaCommand(parts []string, transpiler *jsonlogic2sql.Transpiler) {
 	}
 
 	schemaPath := parts[1]
-	data, err := os.ReadFile(schemaPath)
+	data, err := os.ReadFile(filepath.Clean(schemaPath))
 	if err != nil {
 		fmt.Printf("Error reading schema file: %v\n", err)
 		return
