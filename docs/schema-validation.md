@@ -138,17 +138,17 @@ fmt.Println(sql) // Output: WHERE STRPOS(name, 'hello') > 0
 
 When a schema is provided, the transpiler automatically coerces literal values to match the field's type. This prevents type errors in strict-typing databases like BigQuery and Spanner.
 
-**Number to String** — When a string field is compared with numeric literals, the numbers are coerced to quoted strings:
+**Number to String** - When a string field is compared with numeric literals, the numbers are coerced to quoted strings:
 
 ```go
 // Schema: merchant_sector_code is string type
 sql, _ := transpiler.Transpile(`{"in": [{"var": "merchant_sector_code"}, [5960, 9000]]}`)
 fmt.Println(sql)
 // Output: WHERE merchant_sector_code IN ('5960', '9000')
-// Without schema: WHERE merchant_sector_code IN (5960, 9000) — would fail in BigQuery
+// Without schema: WHERE merchant_sector_code IN (5960, 9000) - would fail in BigQuery
 ```
 
-**String to Number** — When a numeric field is compared with string literals that are valid numbers, the strings are coerced to unquoted numbers:
+**String to Number** - When a numeric field is compared with string literals that are valid numbers, the strings are coerced to unquoted numbers:
 
 ```go
 // Schema: amount is integer type
