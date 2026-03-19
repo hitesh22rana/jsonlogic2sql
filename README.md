@@ -70,6 +70,7 @@ func main() {
 - [Error Handling](docs/error-handling.md) - Error codes and programmatic handling
 - [Development](docs/development.md) - Contributing and development guide
 - [REPL](docs/repl.md) - Interactive testing tool
+- [WASM Playground](docs/wasm-playground.md) - Browser-based demo via WebAssembly
 
 ## Important Notes
 
@@ -97,10 +98,11 @@ SQL: WHERE (a || b)
 ## Development
 
 ```bash
-make test      # Run all tests (3,000+ test cases)
-make build     # Build REPL binary
-make lint      # Run linter
-make run       # Run REPL
+make test       # Run all tests (3,000+ test cases)
+make build      # Build REPL binary
+make build/wasm # Build WASM binary for browser playground
+make lint       # Run linter
+make run        # Run REPL
 ```
 
 ## License
