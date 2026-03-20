@@ -159,6 +159,11 @@
                 badgeEl.textContent = 'error'; badgeEl.className = 'badge off';
                 countEl.textContent = 'error';
                 schemaJSON = null;
+                // Recreate transpiler to clear the previously valid schema
+                const dialect = document.getElementById('dialect').value;
+                jsonlogic2sql.destroyTranspiler(transpilerID);
+                const t = jsonlogic2sql.newTranspiler(dialect);
+                if (!t.error) transpilerID = t.id;
             } else {
                 try {
                     const fields = JSON.parse(json);
@@ -223,7 +228,15 @@
                 const result = jsonlogic2sql[fn](t.id, input);
                 jsonlogic2sql.destroyTranspiler(t.id);
                 const row = document.createElement('div'); row.className = 'dialect-output';
-                row.innerHTML = `<span class="dialect-tag">${dialectLabels[d]}</span><span class="sql-text">${result.error ? '<span style="color:#f85149">' + result.error + '</span>' : result.sql}</span>`;
+                const tag = document.createElement('span');
+                tag.className = 'dialect-tag';
+                tag.textContent = dialectLabels[d];
+                const sql = document.createElement('span');
+                sql.className = 'sql-text';
+                sql.textContent = result.error ? result.error : result.sql;
+                if (result.error) sql.style.color = '#f85149';
+                row.appendChild(tag);
+                row.appendChild(sql);
                 multi.appendChild(row);
             }
             document.getElementById('transpile-time').textContent = (performance.now() - start).toFixed(2) + 'ms (5 dialects)';
