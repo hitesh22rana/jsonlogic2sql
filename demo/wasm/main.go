@@ -189,8 +189,10 @@ func main() {
 
 	js.Global().Set("jsonlogic2sql", js.ValueOf(jsObj))
 
-	// Signal that WASM is ready
-	js.Global().Call("eval", "if (typeof onJsonlogic2sqlReady === 'function') onJsonlogic2sqlReady();")
+	// Signal that WASM is ready (without eval, safe under strict CSP)
+	if cb := js.Global().Get("onJsonlogic2sqlReady"); cb.Truthy() {
+		cb.Invoke()
+	}
 
 	<-c // Block forever
 }
