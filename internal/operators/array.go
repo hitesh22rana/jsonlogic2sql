@@ -12,8 +12,9 @@ import (
 // These handle ProcessedValue strings from custom operators where the AST rewrite
 // cannot reach. Word boundaries prevent corrupting identifiers like "current_balance".
 var (
-	itemWordBoundary    = regexp.MustCompile(`\b` + regexp.QuoteMeta(ItemVar) + `\b`)
-	currentWordBoundary = regexp.MustCompile(`\b` + regexp.QuoteMeta(CurrentVar) + `\b`)
+	itemWordBoundary        = regexp.MustCompile(`\b` + regexp.QuoteMeta(ItemVar) + `\b`)
+	currentWordBoundary     = regexp.MustCompile(`\b` + regexp.QuoteMeta(CurrentVar) + `\b`)
+	accumulatorWordBoundary = regexp.MustCompile(`\b` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -163,7 +164,7 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 
-	// Second argument: transformation expression — rewrite element vars before SQL generation
+	// Second argument: transformation expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
 	transformation, err := a.expressionToSQL(rewritten)
 	if err != nil {
@@ -206,7 +207,7 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 
-	// Second argument: condition expression — rewrite element vars before SQL generation
+	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
 	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
@@ -427,7 +428,7 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 
-	// Second argument: condition expression — rewrite element vars before SQL generation
+	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
 	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
@@ -475,7 +476,7 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 
-	// Second argument: condition expression — rewrite element vars before SQL generation
+	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
 	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
@@ -520,7 +521,7 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 
-	// Second argument: condition expression — rewrite element vars before SQL generation
+	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
 	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
@@ -701,10 +702,10 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 // mapElementVarName maps JSONLogic element variable names to the SQL UNNEST alias.
 // Returns the mapped name, or the original if no mapping applies.
 // Only exact matches ("item", "current", "") and dot-prefix matches ("item.", "current.")
-// are mapped — this prevents corrupting field names like "current_balance" or "item_count".
+// are mapped - this prevents corrupting field names like "current_balance" or "item_count".
 func (a *ArrayOperator) mapElementVarName(varStr string) string {
 	// Exact matches for element references
-	// Note: empty string ("") is NOT rewritten here — it's handled by expressionToSQL's
+	// Note: empty string ("") is NOT rewritten here - it's handled by expressionToSQL's
 	// special case which returns ElemVar directly without schema validation.
 	if varStr == ItemVar || varStr == CurrentVar {
 		return ElemVar
@@ -735,12 +736,12 @@ func (a *ArrayOperator) isArrayOperator(op string) bool {
 // corrupted field names containing "item" or "current" as substrings.
 //
 // When a nested array operator is encountered, only its array source argument
-// (args[0]) is rewritten — the lambda/condition (args[1+]) is left for the
+// (args[0]) is rewritten - the lambda/condition (args[1+]) is left for the
 // nested operator to handle, preserving correct variable scoping.
 func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 	switch e := expr.(type) {
 	case ProcessedValue:
-		// Pre-processed SQL from custom operators — use word-boundary regex
+		// Pre-processed SQL from custom operators - use word-boundary regex
 		if e.IsSQL {
 			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
 			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
@@ -759,15 +760,27 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 						return map[string]interface{}{OpVar: mapped}
 					}
 				}
+				// Handle array-form var: {"var": ["current", defaultValue]}
+				if varArr, ok := varName.([]interface{}); ok && len(varArr) > 0 {
+					if varStr, ok := varArr[0].(string); ok {
+						mapped := a.mapElementVarName(varStr)
+						if mapped != varStr {
+							newArr := make([]interface{}, len(varArr))
+							copy(newArr, varArr)
+							newArr[0] = mapped
+							return map[string]interface{}{OpVar: newArr}
+						}
+					}
+				}
 				return e
 			}
-			// Check for nested array operator — don't rewrite its lambda body
+			// Check for nested array operator - don't rewrite its lambda body
 			for opName, opArgs := range e {
 				if a.isArrayOperator(opName) {
 					if arr, ok := opArgs.([]interface{}); ok {
 						newArgs := make([]interface{}, len(arr))
 						copy(newArgs, arr)
-						// Only rewrite args[0] (array source — outer scope)
+						// Only rewrite args[0] (array source - outer scope)
 						if len(newArgs) > 0 {
 							newArgs[0] = a.rewriteElementVars(arr[0])
 						}
@@ -775,12 +788,12 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 					}
 				}
 			}
-			// Regular single-key operator — recursively rewrite values
+			// Regular single-key operator - recursively rewrite values
 			for opName, opArgs := range e {
 				return map[string]interface{}{opName: a.rewriteElementVars(opArgs)}
 			}
 		}
-		// Multi-key map — recursively rewrite all values
+		// Multi-key map - recursively rewrite all values
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
 			result[k] = a.rewriteElementVars(v)
@@ -805,10 +818,12 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) interface{} {
 	switch e := expr.(type) {
 	case ProcessedValue:
-		// Pre-processed SQL from custom operators — use word-boundary regex
+		// Pre-processed SQL from custom operators - use word-boundary regex
+		// for item, current, AND accumulator
 		if e.IsSQL {
 			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
 			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
+			replaced = accumulatorWordBoundary.ReplaceAllString(replaced, initialSQL)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -833,15 +848,33 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 						return ProcessedValue{Value: initialSQL + suffix, IsSQL: true}
 					}
 				}
+				// Handle array-form var: {"var": ["current", defaultValue]} or {"var": ["accumulator", defaultValue]}
+				if varArr, ok := varName.([]interface{}); ok && len(varArr) > 0 {
+					if varStr, ok := varArr[0].(string); ok {
+						mapped := a.mapElementVarName(varStr)
+						if mapped != varStr {
+							newArr := make([]interface{}, len(varArr))
+							copy(newArr, varArr)
+							newArr[0] = mapped
+							return map[string]interface{}{OpVar: newArr}
+						}
+						if varStr == AccumulatorVar {
+							newArr := make([]interface{}, len(varArr))
+							copy(newArr, varArr)
+							newArr[0] = initialSQL
+							return map[string]interface{}{OpVar: newArr}
+						}
+					}
+				}
 				return e
 			}
-			// Check for nested array operator — don't rewrite its lambda body
+			// Check for nested array operator - don't rewrite its lambda body
 			for opName, opArgs := range e {
 				if a.isArrayOperator(opName) {
 					if arr, ok := opArgs.([]interface{}); ok {
 						newArgs := make([]interface{}, len(arr))
 						copy(newArgs, arr)
-						// Only rewrite args[0] (array source — outer scope)
+						// Only rewrite args[0] (array source - outer scope)
 						if len(newArgs) > 0 {
 							newArgs[0] = a.rewriteReduceVars(arr[0], initialSQL)
 						}
@@ -849,12 +882,12 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 					}
 				}
 			}
-			// Regular single-key operator — recursively rewrite values
+			// Regular single-key operator - recursively rewrite values
 			for opName, opArgs := range e {
 				return map[string]interface{}{opName: a.rewriteReduceVars(opArgs, initialSQL)}
 			}
 		}
-		// Multi-key map — recursively rewrite all values
+		// Multi-key map - recursively rewrite all values
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
 			result[k] = a.rewriteReduceVars(v, initialSQL)

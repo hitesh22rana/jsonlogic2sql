@@ -119,3 +119,55 @@ func TestArrayOperator_ElementRefNoCorruption(t *testing.T) {
 		})
 	}
 }
+
+// TestArrayOperator_ArrayFormVarRewrite verifies that array-form var expressions
+// like {"var": ["current", 0]} are correctly rewritten to {"var": ["elem", 0]}.
+func TestArrayOperator_ArrayFormVarRewrite(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewArrayOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []any
+		contains string
+		absent   string
+	}{
+		{
+			name:     "array-form current with default in reduce",
+			operator: "reduce",
+			args: []any{
+				map[string]any{"var": "items"},
+				map[string]any{"+": []any{map[string]any{"var": "accumulator"}, map[string]any{"var": []any{"current", 0}}}},
+				0,
+			},
+			contains: "COALESCE(elem, 0)",
+			absent:   "COALESCE(current, 0)",
+		},
+		{
+			name:     "array-form item with default in all",
+			operator: "all",
+			args: []any{
+				map[string]any{"var": "scores"},
+				map[string]any{">": []any{map[string]any{"var": []any{"item", 0}}, 50}},
+			},
+			contains: "COALESCE(elem, 0)",
+			absent:   "COALESCE(item, 0)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.ToSQL(tt.operator, tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.contains != "" && !strings.Contains(result, tt.contains) {
+				t.Errorf("expected SQL to contain %q, got: %s", tt.contains, result)
+			}
+			if tt.absent != "" && strings.Contains(result, tt.absent) {
+				t.Errorf("expected SQL NOT to contain %q, got: %s", tt.absent, result)
+			}
+		})
+	}
+}
