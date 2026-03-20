@@ -309,8 +309,10 @@ WHERE 0 + COALESCE((SELECT SUM(elem) FROM UNNEST(numbers) AS elem), 0)
 {"all": [{"var": "ages"}, {">=": [{"var": ""}, 18]}]}
 ```
 ```sql
-WHERE NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18))
+WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))
 ```
+
+> **Note:** The `CARDINALITY > 0` guard ensures JSONLogic spec compliance — `{"all": [[], condition]}` returns `false` (not `true`). ClickHouse uses `length()` instead of `CARDINALITY()`.
 
 ### Some Elements Satisfy Condition
 
