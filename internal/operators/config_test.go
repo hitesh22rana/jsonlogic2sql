@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -415,4 +416,108 @@ func (m *mockSchemaProvider) IsEnumType(fieldName string) bool {
 
 func (m *mockSchemaProvider) ValidateEnumValue(fieldName, value string) error {
 	return nil
+}
+
+func TestOperatorConfig_SetExpressionParser(t *testing.T) {
+	// Test setting a parser on a valid config
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	if config.HasExpressionParser() {
+		t.Errorf("HasExpressionParser() should be false before setting")
+	}
+
+	parser := func(expr any, path string) (string, error) {
+		return "PARSED", nil
+	}
+	config.SetExpressionParser(parser)
+
+	if !config.HasExpressionParser() {
+		t.Errorf("HasExpressionParser() should be true after setting")
+	}
+
+	// Test the parser works
+	result, err := config.ParseExpression(nil, "$")
+	if err != nil {
+		t.Errorf("ParseExpression() unexpected error = %v", err)
+	}
+	if result != "PARSED" {
+		t.Errorf("ParseExpression() = %v, want PARSED", result)
+	}
+
+	// Test setting on nil config (should not panic)
+	var nilConfig *OperatorConfig
+	nilConfig.SetExpressionParser(parser) // Should be a no-op
+}
+
+func TestOperatorConfig_HasExpressionParser(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *OperatorConfig
+		want   bool
+	}{
+		{
+			name:   "nil config",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "config without parser",
+			config: &OperatorConfig{Dialect: dialect.DialectBigQuery},
+			want:   false,
+		},
+		{
+			name: "config with parser",
+			config: &OperatorConfig{
+				Dialect: dialect.DialectBigQuery,
+				ExpressionParser: func(expr any, path string) (string, error) {
+					return "", nil
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.config.HasExpressionParser(); got != tt.want {
+				t.Errorf("HasExpressionParser() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOperatorConfig_ParseExpression(t *testing.T) {
+	// Test with no parser configured
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	_, err := config.ParseExpression(nil, "$")
+	if err == nil {
+		t.Errorf("ParseExpression() expected error when no parser configured, got nil")
+	}
+
+	// Test with nil config
+	var nilConfig *OperatorConfig
+	_, err = nilConfig.ParseExpression(nil, "$")
+	if err == nil {
+		t.Errorf("ParseExpression() expected error for nil config, got nil")
+	}
+
+	// Test with parser that returns error
+	config.SetExpressionParser(func(expr any, path string) (string, error) {
+		return "", fmt.Errorf("parse error")
+	})
+	_, err = config.ParseExpression(nil, "$")
+	if err == nil {
+		t.Errorf("ParseExpression() expected error from parser, got nil")
+	}
+
+	// Test with parser that succeeds
+	config.SetExpressionParser(func(expr any, path string) (string, error) {
+		return "RESULT_SQL", nil
+	})
+	result, err := config.ParseExpression(map[string]interface{}{"custom": "op"}, "$.custom")
+	if err != nil {
+		t.Errorf("ParseExpression() unexpected error = %v", err)
+	}
+	if result != "RESULT_SQL" {
+		t.Errorf("ParseExpression() = %v, want RESULT_SQL", result)
+	}
 }

@@ -290,3 +290,200 @@ func TestDataOperator_valueToSQL(t *testing.T) {
 		})
 	}
 }
+
+func TestDataOperator_getNumber(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected float64
+		hasError bool
+	}{
+		{
+			name:     "float64",
+			input:    float64(3.14),
+			expected: 3.14,
+			hasError: false,
+		},
+		{
+			name:     "float32",
+			input:    float32(2.5),
+			expected: float64(float32(2.5)),
+			hasError: false,
+		},
+		{
+			name:     "int",
+			input:    42,
+			expected: 42.0,
+			hasError: false,
+		},
+		{
+			name:     "int8",
+			input:    int8(10),
+			expected: 10.0,
+			hasError: false,
+		},
+		{
+			name:     "int16",
+			input:    int16(100),
+			expected: 100.0,
+			hasError: false,
+		},
+		{
+			name:     "int32",
+			input:    int32(1000),
+			expected: 1000.0,
+			hasError: false,
+		},
+		{
+			name:     "int64",
+			input:    int64(9999),
+			expected: 9999.0,
+			hasError: false,
+		},
+		{
+			name:     "uint",
+			input:    uint(7),
+			expected: 7.0,
+			hasError: false,
+		},
+		{
+			name:     "uint8",
+			input:    uint8(8),
+			expected: 8.0,
+			hasError: false,
+		},
+		{
+			name:     "uint16",
+			input:    uint16(16),
+			expected: 16.0,
+			hasError: false,
+		},
+		{
+			name:     "uint32",
+			input:    uint32(32),
+			expected: 32.0,
+			hasError: false,
+		},
+		{
+			name:     "uint64",
+			input:    uint64(64),
+			expected: 64.0,
+			hasError: false,
+		},
+		{
+			name:     "string - not a number",
+			input:    "not a number",
+			expected: 0,
+			hasError: true,
+		},
+		{
+			name:     "bool - not a number",
+			input:    true,
+			expected: 0,
+			hasError: true,
+		},
+		{
+			name:     "nil - not a number",
+			input:    nil,
+			expected: 0,
+			hasError: true,
+		},
+		{
+			name:     "slice - not a number",
+			input:    []int{1, 2},
+			expected: 0,
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.getNumber(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("getNumber() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("getNumber() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("getNumber() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestDataOperator_valueToSQL_ProcessedValue(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "ProcessedValue with SQL",
+			input:    ProcessedValue{Value: "COUNT(*)", IsSQL: true},
+			expected: "COUNT(*)",
+			hasError: false,
+		},
+		{
+			name:     "ProcessedValue with literal string",
+			input:    ProcessedValue{Value: "hello", IsSQL: false},
+			expected: "'hello'",
+			hasError: false,
+		},
+		{
+			name:     "ProcessedValue with literal number string",
+			input:    ProcessedValue{Value: "42", IsSQL: false},
+			expected: "'42'",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.valueToSQL(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("valueToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("valueToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestDataOperator_handleVar_EmptyVarName(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	// Empty var name represents the current element in array operations
+	result, err := op.ToSQL("var", []interface{}{""})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	if result != ElemVar {
+		t.Errorf("ToSQL() = %v, want %v", result, ElemVar)
+	}
+}
+
+func TestDataOperator_handleVar_NonStringNonArrayArg(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	// Non-string, non-array argument
+	_, err := op.ToSQL("var", []interface{}{42})
+	if err == nil {
+		t.Errorf("ToSQL() expected error for non-string/non-array arg, got nil")
+	}
+}

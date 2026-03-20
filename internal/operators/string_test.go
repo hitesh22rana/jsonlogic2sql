@@ -2,6 +2,8 @@ package operators
 
 import (
 	"testing"
+
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 )
 
 func TestStringOperator_ToSQL(t *testing.T) {
@@ -349,6 +351,599 @@ func TestStringOperator_NestedOperations(t *testing.T) {
 			}
 			if result != tt.expected {
 				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestStringOperator_processArithmeticExpression(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "addition",
+			operator: "+",
+			args:     []interface{}{map[string]interface{}{"var": "a"}, 5},
+			expected: "(a + 5)",
+			hasError: false,
+		},
+		{
+			name:     "subtraction",
+			operator: "-",
+			args:     []interface{}{map[string]interface{}{"var": "a"}, 3},
+			expected: "(a - 3)",
+			hasError: false,
+		},
+		{
+			name:     "multiplication",
+			operator: "*",
+			args:     []interface{}{map[string]interface{}{"var": "a"}, 2},
+			expected: "(a * 2)",
+			hasError: false,
+		},
+		{
+			name:     "division",
+			operator: "/",
+			args:     []interface{}{map[string]interface{}{"var": "a"}, 4},
+			expected: "(a / 4)",
+			hasError: false,
+		},
+		{
+			name:     "modulo",
+			operator: "%",
+			args:     []interface{}{map[string]interface{}{"var": "a"}, 3},
+			expected: "(a % 3)",
+			hasError: false,
+		},
+		{
+			name:     "unary minus",
+			operator: "-",
+			args:     []interface{}{map[string]interface{}{"var": "x"}},
+			expected: "(-x)",
+			hasError: false,
+		},
+		{
+			name:     "unary plus (cast)",
+			operator: "+",
+			args:     []interface{}{"42"},
+			expected: "CAST('42' AS NUMERIC)",
+			hasError: false,
+		},
+		{
+			name:     "non-array args error",
+			operator: "+",
+			args:     "invalid",
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "insufficient args for binary",
+			operator: "*",
+			args:     []interface{}{5},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "unsupported operator",
+			operator: "^",
+			args:     []interface{}{2, 3},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.processArithmeticExpression(tt.operator, tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("processArithmeticExpression() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("processArithmeticExpression() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("processArithmeticExpression() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestStringOperator_processNotExpression(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		args     interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "not with array of one element",
+			args:     []interface{}{map[string]interface{}{"var": "verified"}},
+			expected: "NOT (verified)",
+			hasError: false,
+		},
+		{
+			name:     "not with single value (non-array)",
+			args:     map[string]interface{}{"var": "flag"},
+			expected: "NOT (flag)",
+			hasError: false,
+		},
+		{
+			name:     "not with literal true",
+			args:     []interface{}{true},
+			expected: "NOT (TRUE)",
+			hasError: false,
+		},
+		{
+			name:     "not with too many args error",
+			args:     []interface{}{true, false},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.processNotExpression(tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("processNotExpression() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("processNotExpression() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("processNotExpression() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestStringOperator_processBooleanCoercion(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		args     interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "boolean coercion with array of one element",
+			args:     []interface{}{map[string]interface{}{"var": "value"}},
+			expected: "(value IS NOT NULL AND value != FALSE AND value != 0 AND value != '')",
+			hasError: false,
+		},
+		{
+			name:     "boolean coercion with single value (non-array)",
+			args:     map[string]interface{}{"var": "flag"},
+			expected: "(flag IS NOT NULL AND flag != FALSE AND flag != 0 AND flag != '')",
+			hasError: false,
+		},
+		{
+			name:     "boolean coercion with literal",
+			args:     []interface{}{42},
+			expected: "(42 IS NOT NULL AND 42 != FALSE AND 42 != 0 AND 42 != '')",
+			hasError: false,
+		},
+		{
+			name:     "boolean coercion with too many args error",
+			args:     []interface{}{1, 2},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.processBooleanCoercion(tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("processBooleanCoercion() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("processBooleanCoercion() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("processBooleanCoercion() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestStringOperator_valueToSQL_Extended(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "ProcessedValue SQL",
+			input:    ProcessedValue{Value: "UPPER(name)", IsSQL: true},
+			expected: "UPPER(name)",
+			hasError: false,
+		},
+		{
+			name:     "ProcessedValue literal",
+			input:    ProcessedValue{Value: "hello", IsSQL: false},
+			expected: "'hello'",
+			hasError: false,
+		},
+		{
+			name:     "addition inside string context",
+			input:    map[string]interface{}{"+": []interface{}{map[string]interface{}{"var": "x"}, 1}},
+			expected: "(x + 1)",
+			hasError: false,
+		},
+		{
+			name:     "comparison inside string context",
+			input:    map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+			expected: "(x > 0)",
+			hasError: false,
+		},
+		{
+			name:     "not expression",
+			input:    map[string]interface{}{"!": []interface{}{map[string]interface{}{"var": "verified"}}},
+			expected: "NOT (verified)",
+			hasError: false,
+		},
+		{
+			name:     "boolean coercion expression",
+			input:    map[string]interface{}{"!!": []interface{}{map[string]interface{}{"var": "value"}}},
+			expected: "(value IS NOT NULL AND value != FALSE AND value != 0 AND value != '')",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.valueToSQL(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("valueToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("valueToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestStringOperator_ClickHouseDialect(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectClickHouse, nil)
+	op := NewStringOperator(config)
+
+	result, err := op.ToSQL("substr", []interface{}{"Hello World", 6, 5})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	expected := "substring('Hello World', 7, 5)"
+	if result != expected {
+		t.Errorf("ToSQL() = %v, want %v", result, expected)
+	}
+}
+
+func TestStringOperator_valueToSQL_ExpressionParserCallback(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.SetExpressionParser(func(expr any, path string) (string, error) {
+		return "CUSTOM_STRING()", nil
+	})
+	op := NewStringOperator(config)
+
+	result, err := op.valueToSQL(map[string]interface{}{"toLower": []interface{}{map[string]interface{}{"var": "name"}}})
+	if err != nil {
+		t.Errorf("valueToSQL() unexpected error = %v", err)
+	}
+	if result != "CUSTOM_STRING()" {
+		t.Errorf("valueToSQL() = %v, want CUSTOM_STRING()", result)
+	}
+}
+
+func TestStringOperator_convertStartIndex_ComplexExpression(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	result, err := op.ToSQL("substr", []interface{}{
+		map[string]interface{}{"var": "name"},
+		map[string]interface{}{"var": "start_pos"},
+	})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	expected := "SUBSTR(name, (start_pos + 1))"
+	if result != expected {
+		t.Errorf("ToSQL() = %v, want %v", result, expected)
+	}
+}
+
+// stringSchemaProvider is a configurable schema provider for string operator tests.
+type stringSchemaProvider struct {
+	fields map[string]string
+}
+
+func (m *stringSchemaProvider) HasField(fieldName string) bool {
+	_, ok := m.fields[fieldName]
+	return ok
+}
+
+func (m *stringSchemaProvider) GetFieldType(fieldName string) string {
+	return m.fields[fieldName]
+}
+
+func (m *stringSchemaProvider) ValidateField(_ string) error {
+	return nil
+}
+
+func (m *stringSchemaProvider) IsArrayType(fieldName string) bool {
+	return m.fields[fieldName] == "array"
+}
+
+func (m *stringSchemaProvider) IsStringType(fieldName string) bool {
+	return m.fields[fieldName] == "string"
+}
+
+func (m *stringSchemaProvider) IsNumericType(fieldName string) bool {
+	t := m.fields[fieldName]
+	return t == "integer" || t == "number"
+}
+
+func (m *stringSchemaProvider) IsBooleanType(fieldName string) bool {
+	return m.fields[fieldName] == "boolean"
+}
+
+func (m *stringSchemaProvider) IsEnumType(_ string) bool {
+	return false
+}
+
+func (m *stringSchemaProvider) GetAllowedValues(_ string) []string {
+	return nil
+}
+
+func (m *stringSchemaProvider) ValidateEnumValue(_, _ string) error {
+	return nil
+}
+
+func TestStringOperator_validateStringOperand(t *testing.T) {
+	schema := &stringSchemaProvider{
+		fields: map[string]string{
+			"name":     "string",
+			"amount":   "integer",
+			"tags":     "array",
+			"metadata": "object",
+			"verified": "boolean",
+		},
+	}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewStringOperator(config)
+
+	tests := []struct {
+		name     string
+		value    interface{}
+		hasError bool
+	}{
+		{
+			name:     "string field passes",
+			value:    map[string]interface{}{"var": "name"},
+			hasError: false,
+		},
+		{
+			name:     "numeric field passes (implicit conversion)",
+			value:    map[string]interface{}{"var": "amount"},
+			hasError: false,
+		},
+		{
+			name:     "array field fails",
+			value:    map[string]interface{}{"var": "tags"},
+			hasError: true,
+		},
+		{
+			name:     "object field fails",
+			value:    map[string]interface{}{"var": "metadata"},
+			hasError: true,
+		},
+		{
+			name:     "boolean field passes (not explicitly rejected)",
+			value:    map[string]interface{}{"var": "verified"},
+			hasError: false,
+		},
+		{
+			name:     "literal value - no validation",
+			value:    "hello",
+			hasError: false,
+		},
+		{
+			name:     "non-var map - no validation",
+			value:    map[string]interface{}{"other": "value"},
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := op.validateStringOperand(tt.value)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("validateStringOperand() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateStringOperand() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestStringOperator_extractFieldName(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		varName  interface{}
+		expected string
+	}{
+		{
+			name:     "string var name",
+			varName:  "field",
+			expected: "field",
+		},
+		{
+			name:     "array with string first element",
+			varName:  []interface{}{"field", "default"},
+			expected: "field",
+		},
+		{
+			name:     "array with non-string first element",
+			varName:  []interface{}{123},
+			expected: "",
+		},
+		{
+			name:     "empty array",
+			varName:  []interface{}{},
+			expected: "",
+		},
+		{
+			name:     "number",
+			varName:  42,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := op.extractFieldName(tt.varName)
+			if result != tt.expected {
+				t.Errorf("extractFieldName() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStringOperator_processComparisonExpression(t *testing.T) {
+	op := NewStringOperator(nil)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "greater than",
+			operator: ">",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x > 5)",
+			hasError: false,
+		},
+		{
+			name:     "greater than or equal",
+			operator: ">=",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x >= 5)",
+			hasError: false,
+		},
+		{
+			name:     "less than",
+			operator: "<",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x < 5)",
+			hasError: false,
+		},
+		{
+			name:     "less than or equal",
+			operator: "<=",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x <= 5)",
+			hasError: false,
+		},
+		{
+			name:     "equality",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x = 5)",
+			hasError: false,
+		},
+		{
+			name:     "strict equality",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x = 5)",
+			hasError: false,
+		},
+		{
+			name:     "inequality",
+			operator: "!=",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x != 5)",
+			hasError: false,
+		},
+		{
+			name:     "strict inequality",
+			operator: "!==",
+			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
+			expected: "(x <> 5)",
+			hasError: false,
+		},
+		{
+			name:     "unsupported comparison",
+			operator: "<>",
+			args:     []interface{}{1, 2},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "non-array args error",
+			operator: ">",
+			args:     "invalid",
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "wrong number of args",
+			operator: ">",
+			args:     []interface{}{1, 2, 3},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.processComparisonExpression(tt.operator, tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("processComparisonExpression() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("processComparisonExpression() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("processComparisonExpression() = %v, want %v", result, tt.expected)
+				}
 			}
 		})
 	}

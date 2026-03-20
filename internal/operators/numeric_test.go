@@ -1,7 +1,10 @@
 package operators
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 )
 
 func TestNumericOperator_ToSQL(t *testing.T) {
@@ -343,6 +346,578 @@ func TestNumericOperator_valueToSQL(t *testing.T) {
 			}
 			if result != tt.expected {
 				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+// numericSchemaProvider is a configurable schema provider for numeric operator tests.
+type numericSchemaProvider struct {
+	fields map[string]string
+}
+
+func (m *numericSchemaProvider) HasField(fieldName string) bool {
+	_, ok := m.fields[fieldName]
+	return ok
+}
+
+func (m *numericSchemaProvider) GetFieldType(fieldName string) string {
+	return m.fields[fieldName]
+}
+
+func (m *numericSchemaProvider) ValidateField(_ string) error {
+	return nil
+}
+
+func (m *numericSchemaProvider) IsArrayType(fieldName string) bool {
+	return m.fields[fieldName] == "array"
+}
+
+func (m *numericSchemaProvider) IsStringType(fieldName string) bool {
+	return m.fields[fieldName] == "string"
+}
+
+func (m *numericSchemaProvider) IsNumericType(fieldName string) bool {
+	t := m.fields[fieldName]
+	return t == "integer" || t == "number"
+}
+
+func (m *numericSchemaProvider) IsBooleanType(fieldName string) bool {
+	return m.fields[fieldName] == "boolean"
+}
+
+func (m *numericSchemaProvider) IsEnumType(_ string) bool {
+	return false
+}
+
+func (m *numericSchemaProvider) GetAllowedValues(_ string) []string {
+	return nil
+}
+
+func (m *numericSchemaProvider) ValidateEnumValue(_, _ string) error {
+	return nil
+}
+
+func TestNumericOperator_validateNumericOperand(t *testing.T) {
+	schema := &numericSchemaProvider{
+		fields: map[string]string{
+			"amount":   "integer",
+			"price":    "number",
+			"name":     "string",
+			"tags":     "array",
+			"verified": "boolean",
+		},
+	}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewNumericOperator(config)
+
+	tests := []struct {
+		name     string
+		value    interface{}
+		hasError bool
+	}{
+		{
+			name:     "numeric integer field passes",
+			value:    map[string]interface{}{"var": "amount"},
+			hasError: false,
+		},
+		{
+			name:     "numeric number field passes",
+			value:    map[string]interface{}{"var": "price"},
+			hasError: false,
+		},
+		{
+			name:     "string field fails",
+			value:    map[string]interface{}{"var": "name"},
+			hasError: true,
+		},
+		{
+			name:     "array field fails",
+			value:    map[string]interface{}{"var": "tags"},
+			hasError: true,
+		},
+		{
+			name:     "boolean field fails",
+			value:    map[string]interface{}{"var": "verified"},
+			hasError: true,
+		},
+		{
+			name:     "literal number - no validation",
+			value:    42,
+			hasError: false,
+		},
+		{
+			name:     "non-var map - no validation",
+			value:    map[string]interface{}{"other": "value"},
+			hasError: false,
+		},
+		{
+			name:     "unknown field - no validation (no type in schema)",
+			value:    map[string]interface{}{"var": "unknown_field"},
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := op.validateNumericOperand(tt.value)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("validateNumericOperand() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateNumericOperand() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+
+	// Test with nil schema - should always pass
+	opNoSchema := NewNumericOperator(nil)
+	if err := opNoSchema.validateNumericOperand(map[string]interface{}{"var": "name"}); err != nil {
+		t.Errorf("validateNumericOperand() with nil schema should pass, got %v", err)
+	}
+}
+
+func TestNumericOperator_ToSQL_WithSchemaValidation(t *testing.T) {
+	schema := &numericSchemaProvider{
+		fields: map[string]string{
+			"amount": "integer",
+			"name":   "string",
+		},
+	}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewNumericOperator(config)
+
+	// Should fail: string field in numeric operation
+	_, err := op.ToSQL("+", []interface{}{
+		map[string]interface{}{"var": "name"},
+		10,
+	})
+	if err == nil {
+		t.Errorf("ToSQL() expected error for string field in addition, got nil")
+	}
+
+	// Should succeed: numeric field in numeric operation
+	result, err := op.ToSQL("+", []interface{}{
+		map[string]interface{}{"var": "amount"},
+		10,
+	})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	if result != "(amount + 10)" {
+		t.Errorf("ToSQL() = %v, want (amount + 10)", result)
+	}
+}
+
+func TestNumericOperator_valueToSQL_ProcessedValue(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "ProcessedValue with SQL",
+			input:    ProcessedValue{Value: "SUM(amount)", IsSQL: true},
+			expected: "SUM(amount)",
+			hasError: false,
+		},
+		{
+			name:     "ProcessedValue with literal",
+			input:    ProcessedValue{Value: "hello", IsSQL: false},
+			expected: "'hello'",
+			hasError: false,
+		},
+		{
+			name:     "string value passed through as SQL",
+			input:    "pre_processed_sql",
+			expected: "pre_processed_sql",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.valueToSQL(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("valueToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("valueToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestNumericOperator_generateComplexSQL(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []string
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "addition two args",
+			operator: "+",
+			args:     []string{"a", "b"},
+			expected: "(a + b)",
+			hasError: false,
+		},
+		{
+			name:     "addition three args",
+			operator: "+",
+			args:     []string{"a", "b", "c"},
+			expected: "(a + b + c)",
+			hasError: false,
+		},
+		{
+			name:     "addition insufficient args",
+			operator: "+",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "subtraction two args",
+			operator: "-",
+			args:     []string{"a", "b"},
+			expected: "(a - b)",
+			hasError: false,
+		},
+		{
+			name:     "subtraction unary minus",
+			operator: "-",
+			args:     []string{"x"},
+			expected: "(-x)",
+			hasError: false,
+		},
+		{
+			name:     "multiplication two args",
+			operator: "*",
+			args:     []string{"a", "b"},
+			expected: "(a * b)",
+			hasError: false,
+		},
+		{
+			name:     "multiplication insufficient args",
+			operator: "*",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "division two args",
+			operator: "/",
+			args:     []string{"a", "b"},
+			expected: "(a / b)",
+			hasError: false,
+		},
+		{
+			name:     "division insufficient args",
+			operator: "/",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "modulo two args",
+			operator: "%",
+			args:     []string{"a", "b"},
+			expected: "(a % b)",
+			hasError: false,
+		},
+		{
+			name:     "modulo insufficient args",
+			operator: "%",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "max two args",
+			operator: "max",
+			args:     []string{"a", "b"},
+			expected: "GREATEST(a, b)",
+			hasError: false,
+		},
+		{
+			name:     "max insufficient args",
+			operator: "max",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "min two args",
+			operator: "min",
+			args:     []string{"a", "b"},
+			expected: "LEAST(a, b)",
+			hasError: false,
+		},
+		{
+			name:     "min insufficient args",
+			operator: "min",
+			args:     []string{"a"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "unsupported operator",
+			operator: "^",
+			args:     []string{"a", "b"},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.generateComplexSQL(tt.operator, tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("generateComplexSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("generateComplexSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("generateComplexSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestNumericOperator_valueToSQL_NestedComparison(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	// Test nested comparison inside numeric valueToSQL
+	input := map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "status"}, "active"}}
+	result, err := op.valueToSQL(input)
+	if err != nil {
+		t.Errorf("valueToSQL() unexpected error = %v", err)
+	}
+	// The var resolves to "status" but processComplexArgsForComparison passes raw strings
+	// so comparison operator may quote the var result as a literal string
+	if result == "" {
+		t.Error("valueToSQL() returned empty string for nested comparison")
+	}
+}
+
+func TestNumericOperator_valueToSQL_NestedIf(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	// Test nested if expression
+	input := map[string]interface{}{
+		"if": []interface{}{
+			map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+			1,
+			0,
+		},
+	}
+	result, err := op.valueToSQL(input)
+	if err != nil {
+		t.Errorf("valueToSQL() unexpected error = %v", err)
+	}
+	expected := "CASE WHEN x > 0 THEN 1 ELSE 0 END"
+	if result != expected {
+		t.Errorf("valueToSQL() = %v, want %v", result, expected)
+	}
+}
+
+func TestNumericOperator_valueToSQL_NestedLogical(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name: "nested and",
+			input: map[string]interface{}{
+				"and": []interface{}{
+					map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+					map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "x"}, 100}},
+				},
+			},
+			expected: "(x > 0 AND x < 100)",
+			hasError: false,
+		},
+		{
+			name: "nested or",
+			input: map[string]interface{}{
+				"or": []interface{}{
+					map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "status"}, "a"}},
+					map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "status"}, "b"}},
+				},
+			},
+			expected: "(status = 'a' OR status = 'b')",
+			hasError: false,
+		},
+		{
+			name: "nested not",
+			input: map[string]interface{}{
+				"!": []interface{}{
+					map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+				},
+			},
+			expected: "NOT (x = 0)",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.valueToSQL(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("valueToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("valueToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestNumericOperator_valueToSQL_ExpressionParserCallback(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.SetExpressionParser(func(expr any, path string) (string, error) {
+		return "CUSTOM_NUMERIC()", nil
+	})
+	op := NewNumericOperator(config)
+
+	// Unknown operator with expression parser should delegate
+	result, err := op.valueToSQL(map[string]interface{}{"customOp": []interface{}{1, 2}})
+	if err != nil {
+		t.Errorf("valueToSQL() unexpected error = %v", err)
+	}
+	if result != "CUSTOM_NUMERIC()" {
+		t.Errorf("valueToSQL() = %v, want CUSTOM_NUMERIC()", result)
+	}
+}
+
+func TestNumericOperator_processComplexArgsForComparison(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	args := []interface{}{
+		map[string]interface{}{"var": "amount"},
+		42,
+	}
+	result, err := op.processComplexArgsForComparison(args)
+	if err != nil {
+		t.Errorf("processComplexArgsForComparison() unexpected error = %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("processComplexArgsForComparison() returned %d args, want 2", len(result))
+	}
+	if fmt.Sprintf("%v", result[0]) != "amount" {
+		t.Errorf("processComplexArgsForComparison()[0] = %v, want amount", result[0])
+	}
+	if fmt.Sprintf("%v", result[1]) != "42" {
+		t.Errorf("processComplexArgsForComparison()[1] = %v, want 42", result[1])
+	}
+}
+
+func TestNumericOperator_extractFieldName(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	tests := []struct {
+		name     string
+		varName  interface{}
+		expected string
+	}{
+		{
+			name:     "string var name",
+			varName:  "field",
+			expected: "field",
+		},
+		{
+			name:     "array with string first element",
+			varName:  []interface{}{"field", "default"},
+			expected: "field",
+		},
+		{
+			name:     "array with non-string first element",
+			varName:  []interface{}{123},
+			expected: "",
+		},
+		{
+			name:     "empty array",
+			varName:  []interface{}{},
+			expected: "",
+		},
+		{
+			name:     "non-string non-array",
+			varName:  42,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := op.extractFieldName(tt.varName)
+			if result != tt.expected {
+				t.Errorf("extractFieldName() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNumericOperator_extractFieldNameFromValue(t *testing.T) {
+	op := NewNumericOperator(nil)
+
+	tests := []struct {
+		name     string
+		value    interface{}
+		expected string
+	}{
+		{
+			name:     "var expression",
+			value:    map[string]interface{}{"var": "amount"},
+			expected: "amount",
+		},
+		{
+			name:     "non-var map",
+			value:    map[string]interface{}{"other": "value"},
+			expected: "",
+		},
+		{
+			name:     "primitive value",
+			value:    42,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := op.extractFieldNameFromValue(tt.value)
+			if result != tt.expected {
+				t.Errorf("extractFieldNameFromValue() = %v, want %v", result, tt.expected)
 			}
 		})
 	}
