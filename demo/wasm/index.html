@@ -165,17 +165,26 @@
                 const t = jsonlogic2sql.newTranspiler(dialect);
                 if (!t.error) transpilerID = t.id;
             } else {
+                schemaJSON = json;
                 try {
                     const fields = JSON.parse(json);
-                    const n = fields.length;
-                    statusEl.textContent = n + ' field' + (n !== 1 ? 's' : '') + ' loaded';
-                    statusEl.style.color = '#7ee787';
-                    badgeEl.textContent = n + ' fields'; badgeEl.className = 'badge on';
-                    countEl.textContent = n + ' fields';
-                    schemaJSON = json;
+                    if (Array.isArray(fields)) {
+                        const n = fields.length;
+                        statusEl.textContent = n + ' field' + (n !== 1 ? 's' : '') + ' loaded';
+                        statusEl.style.color = '#7ee787';
+                        badgeEl.textContent = n + ' fields'; badgeEl.className = 'badge on';
+                        countEl.textContent = n + ' fields';
+                    } else {
+                        statusEl.textContent = 'Schema applied (0 fields)';
+                        statusEl.style.color = '#d29922';
+                        badgeEl.textContent = '0 fields'; badgeEl.className = 'badge on';
+                        countEl.textContent = '0 fields';
+                    }
                 } catch (_) {
                     statusEl.textContent = 'Schema applied';
                     statusEl.style.color = '#7ee787';
+                    badgeEl.textContent = 'on'; badgeEl.className = 'badge on';
+                    countEl.textContent = 'unknown';
                 }
             }
         }
