@@ -857,7 +857,7 @@ func TestDeeplyNestedCustomOperators(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// Note: string literals come pre-quoted from the parser
-		expected := "WHERE NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%'))"
+		expected := "WHERE (CARDINALITY(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%')))"
 		if sql != expected {
 			t.Errorf("expected %s, got %s", expected, sql)
 		}
@@ -933,7 +933,7 @@ func TestDeeplyNestedCustomOperators(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// Note: string literals come pre-quoted from the parser
-		expected := "WHERE (NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%')) AND EXISTS (SELECT 1 FROM UNNEST(emails) AS elem WHERE elem LIKE '%'@valid.com''))"
+		expected := "WHERE ((CARDINALITY(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%'))) AND EXISTS (SELECT 1 FROM UNNEST(emails) AS elem WHERE elem LIKE '%'@valid.com''))"
 		if sql != expected {
 			t.Errorf("expected %s, got %s", expected, sql)
 		}
@@ -946,7 +946,7 @@ func TestDeeplyNestedCustomOperators(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// Note: string literals come pre-quoted from the parser
-		expected := "WHERE (NOT EXISTS (SELECT 1 FROM UNNEST(names) AS elem WHERE elem LIKE ''Bot'%') OR NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem > 50)))"
+		expected := "WHERE (NOT EXISTS (SELECT 1 FROM UNNEST(names) AS elem WHERE elem LIKE ''Bot'%') OR (CARDINALITY(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem > 50))))"
 		if sql != expected {
 			t.Errorf("expected %s, got %s", expected, sql)
 		}
@@ -959,7 +959,7 @@ func TestDeeplyNestedCustomOperators(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// Note: string literals come pre-quoted from the parser
-		expected := "WHERE ((NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%')) OR NOT EXISTS (SELECT 1 FROM UNNEST(emails) AS elem WHERE elem LIKE ''blocked_'%')) AND EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE elem > 100))"
+		expected := "WHERE (((CARDINALITY(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%'))) OR NOT EXISTS (SELECT 1 FROM UNNEST(emails) AS elem WHERE elem LIKE ''blocked_'%')) AND EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE elem > 100))"
 		if sql != expected {
 			t.Errorf("expected %s, got %s", expected, sql)
 		}
@@ -984,7 +984,7 @@ func TestDeeplyNestedCustomOperators(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expected := "WHERE CASE WHEN NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem > 50)) THEN status ELSE 'FAILED' END"
+		expected := "WHERE CASE WHEN (CARDINALITY(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem > 50))) THEN status ELSE 'FAILED' END"
 		if sql != expected {
 			t.Errorf("expected %s, got %s", expected, sql)
 		}
@@ -1083,11 +1083,11 @@ func TestDeeplyNestedCustomOperatorsMultiDialect(t *testing.T) {
 			// ClickHouse uses arrayAll, others use NOT EXISTS
 			// Note: string literals come pre-quoted from the parser
 			if d.dialect == DialectClickHouse {
-				if sql != "WHERE arrayAll(elem -> elem NOT LIKE '%'spam'%', tags)" {
+				if sql != "WHERE (length(tags) > 0 AND arrayAll(elem -> elem NOT LIKE '%'spam'%', tags))" {
 					t.Errorf("[%s] all with custom operator: got %s", d.name, sql)
 				}
 			} else {
-				if sql != "WHERE NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%'))" {
+				if sql != "WHERE (CARDINALITY(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem NOT LIKE '%'spam'%')))" {
 					t.Errorf("[%s] all with custom operator: got %s", d.name, sql)
 				}
 			}

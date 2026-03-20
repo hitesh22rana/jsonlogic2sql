@@ -436,14 +436,16 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
+	// JSONLogic spec: {"all": [[], condition]} returns false (empty array = false).
+	// Without a guard, SQL NOT EXISTS on an empty UNNEST returns true (no rows to violate).
+	// We add an emptiness check: array must be non-null and non-empty.
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayAll(elem -> %s, %s)", conditionWithElem, array), nil
+		return fmt.Sprintf("(length(%s) > 0 AND arrayAll(elem -> %s, %s))", array, conditionWithElem, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		// Standard SQL: NOT EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE NOT (condition))
-		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s))", array, conditionWithElem), nil
+		return fmt.Sprintf("(CARDINALITY(%s) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", array, array, conditionWithElem), nil
 	}
-	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s))", array, conditionWithElem), nil
+	return fmt.Sprintf("(CARDINALITY(%s) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", array, array, conditionWithElem), nil
 }
 
 // handleSome converts some operator to SQL.
