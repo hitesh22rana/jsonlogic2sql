@@ -141,11 +141,11 @@ formatters:
     - goimports
   settings:
     gofumpt:
-      module-path: github.com/kouzoh/merpay-aml-manager-tool
+      module-path: github.com/h22rana/jsonlogic2sql
       extra-rules: true
     goimports:
       local-prefixes:
-        - github.com/kouzoh/merpay-aml-manager-tool
+        - github.com/h22rana/jsonlogic2sql
   exclusions:
     generated: lax
     paths:
