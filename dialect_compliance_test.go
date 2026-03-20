@@ -148,10 +148,10 @@ func TestDialectSpecificArrayOperators(t *testing.T) {
 			name:  "all elements check",
 			input: `{"all": [{"var": "ages"}, {">=": [{"var": "item"}, 18]}]}`,
 			expected: map[Dialect]string{
-				DialectBigQuery:   "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
-				DialectSpanner:    "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+				DialectBigQuery:   "WHERE (ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+				DialectSpanner:    "WHERE (ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
 				DialectPostgreSQL: "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
-				DialectDuckDB:     "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+				DialectDuckDB:     "WHERE (length(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
 				DialectClickHouse: "WHERE (length(ages) > 0 AND arrayAll(elem -> elem >= 18, ages))",
 			},
 		},

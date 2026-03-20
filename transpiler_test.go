@@ -521,7 +521,7 @@ func TestAllOperators(t *testing.T) {
 		{
 			name:     "all elements",
 			input:    `{"all": [{"var": "ages"}, {">=": [{"var": "item"}, 18]}]}`,
-			expected: "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+			expected: "WHERE (ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
 			hasError: false,
 		},
 		{
@@ -677,7 +677,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "nested all in comparison",
 			input:    `{">": [{"all": [{"var": "scores"}, {">=": [{"var": "elem"}, 70]}]}, true]}`,
-			expected: "WHERE (CARDINALITY(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem >= 70))) > TRUE",
+			expected: "WHERE (ARRAY_LENGTH(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT (elem >= 70))) > TRUE",
 			hasError: false,
 		},
 		{
@@ -737,7 +737,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "nested all with nested comparison",
 			input:    `{"all": [{"var": "scores"}, {"and": [{">=": [{"var": "elem"}, 0]}, {"<=": [{"var": "elem"}, 100]}]}]}`,
-			expected: "WHERE (CARDINALITY(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT ((elem >= 0 AND elem <= 100))))",
+			expected: "WHERE (ARRAY_LENGTH(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT ((elem >= 0 AND elem <= 100))))",
 			hasError: false,
 		},
 		{
@@ -749,7 +749,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "very deeply nested",
 			input:    `{"and": [{"some": [{"filter": [{"var": "data"}, {">": [{"var": "value"}, 0]}]}, {"all": [{"var": "elem.items"}, {">=": [{"var": "elem.score"}, 50]}]}]}, {">": [{"reduce": [{"var": "totals"}, {"+": [{"var": "accumulator"}, {"*": [{"var": "current"}, {"if": [{">": [{"var": "current"}, 100]}, 2, 1]}]}]}, 0]}, 1000]}]}`,
-			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE value > 0)) AS elem WHERE (CARDINALITY(elem.elems) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(elem.elems) AS elem WHERE NOT (elem.score >= 50)))) AND (SELECT (0 + (elem * CASE WHEN elem > 100 THEN 2 ELSE 1 END)) FROM UNNEST(totals) AS elem) > 1000)",
+			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE value > 0)) AS elem WHERE (ARRAY_LENGTH(elem.elems) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(elem.elems) AS elem WHERE NOT (elem.score >= 50)))) AND (SELECT (0 + (elem * CASE WHEN elem > 100 THEN 2 ELSE 1 END)) FROM UNNEST(totals) AS elem) > 1000)",
 			hasError: false,
 		},
 		{
@@ -767,7 +767,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "complex array operations",
 			input:    `{"and": [{"some": [{"var": "items"}, {">": [{"var": "price"}, 100]}]}, {"all": [{"var": "tags"}, {"in": [{"var": "elem"}, ["important", "urgent"]]}]}]}`,
-			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE price > 100) AND (CARDINALITY(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem IN ('important', 'urgent')))))",
+			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE price > 100) AND (ARRAY_LENGTH(tags) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE NOT (elem IN ('important', 'urgent')))))",
 			hasError: false,
 		},
 		{
@@ -998,7 +998,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "nested all with some",
 			input:    `{"all": [{"var": "groups"}, {"some": [{"var": "members"}, {"==": [{"var": "role"}, "admin"]}]}]}`,
-			expected: "WHERE (CARDINALITY(groups) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(groups) AS elem WHERE NOT (EXISTS (SELECT 1 FROM UNNEST(members) AS elem WHERE role = 'admin'))))",
+			expected: "WHERE (ARRAY_LENGTH(groups) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(groups) AS elem WHERE NOT (EXISTS (SELECT 1 FROM UNNEST(members) AS elem WHERE role = 'admin'))))",
 			hasError: false,
 		},
 
@@ -1229,11 +1229,20 @@ func TestArrayOperatorsDialectSupport(t *testing.T) {
 					expected: "WHERE (SELECT (1 * elem) FROM UNNEST(numbers) AS elem)",
 				},
 
-				// All operator tests
+				// All operator tests - dialect-specific array length function
 				{
-					name:     "all elements satisfy condition",
-					input:    `{"all": [{"var": "ages"}, {">=": [{"var": "item"}, 18]}]}`,
-					expected: "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+					name:  "all elements satisfy condition",
+					input: `{"all": [{"var": "ages"}, {">=": [{"var": "item"}, 18]}]}`,
+					expected: func() string {
+						switch d.dialect {
+						case DialectPostgreSQL:
+							return "WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						case DialectDuckDB:
+							return "WHERE (length(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						default: // BigQuery, Spanner
+							return "WHERE (ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						}
+					}(),
 				},
 
 				// Some operator tests

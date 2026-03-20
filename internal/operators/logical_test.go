@@ -577,13 +577,13 @@ func TestLogicalOperator_SchemaAwareTruthiness(t *testing.T) {
 		{
 			name:     "array field - tags",
 			args:     []interface{}{map[string]interface{}{"var": "tags"}},
-			expected: "(tags IS NOT NULL AND CARDINALITY(tags) > 0)",
+			expected: "(tags IS NOT NULL AND ARRAY_LENGTH(tags) > 0)",
 			hasError: false,
 		},
 		{
 			name:     "array field - items",
 			args:     []interface{}{map[string]interface{}{"var": "items"}},
-			expected: "(items IS NOT NULL AND CARDINALITY(items) > 0)",
+			expected: "(items IS NOT NULL AND ARRAY_LENGTH(items) > 0)",
 			hasError: false,
 		},
 		// Unknown/empty type - fallback to generic

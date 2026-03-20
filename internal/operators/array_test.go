@@ -91,14 +91,14 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "all with array and condition",
 			operator: "all",
 			args:     []interface{}{[]interface{}{10, 20, 30}, map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "item"}, 5}}},
-			expected: "(CARDINALITY([10 20 30]) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST([10 20 30]) AS elem WHERE NOT (elem > 5)))",
+			expected: "(ARRAY_LENGTH([10 20 30]) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST([10 20 30]) AS elem WHERE NOT (elem > 5)))",
 			hasError: false,
 		},
 		{
 			name:     "all with var array",
 			operator: "all",
 			args:     []interface{}{map[string]interface{}{"var": "ages"}, map[string]interface{}{">=": []interface{}{map[string]interface{}{"var": "item"}, 18}}},
-			expected: "(CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+			expected: "(ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
 			hasError: false,
 		},
 		{
@@ -366,12 +366,24 @@ func TestArrayOperator_DialectSupport(t *testing.T) {
 					hasError: false,
 				},
 
-				// All tests
+				// All tests - dialect-specific array length function
 				{
 					name:     "all with condition",
 					operator: "all",
 					args:     []any{map[string]any{"var": "ages"}, map[string]any{">=": []any{map[string]any{"var": "item"}, 18}}},
-					expected: "(CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))",
+					expected: func() string {
+						switch d.dialect {
+						case dialect.DialectPostgreSQL:
+							return "(CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						case dialect.DialectDuckDB:
+							return "(length(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						case dialect.DialectClickHouse:
+							return "(length(ages) > 0 AND arrayAll(elem -> elem >= 18, ages))"
+						case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner:
+							return "(ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))"
+						}
+						return ""
+					}(),
 					hasError: false,
 				},
 
@@ -827,7 +839,7 @@ func TestArrayOperator_EdgeCases(t *testing.T) {
 					},
 				},
 			},
-			expected: "(CARDINALITY(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT ((elem >= 0 AND elem <= 100))))",
+			expected: "(ARRAY_LENGTH(scores) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(scores) AS elem WHERE NOT ((elem >= 0 AND elem <= 100))))",
 			hasError: false,
 		},
 		{

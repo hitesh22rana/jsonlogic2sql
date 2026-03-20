@@ -309,10 +309,17 @@ WHERE 0 + COALESCE((SELECT SUM(elem) FROM UNNEST(numbers) AS elem), 0)
 {"all": [{"var": "ages"}, {">=": [{"var": ""}, 18]}]}
 ```
 ```sql
+-- BigQuery/Spanner
+WHERE (ARRAY_LENGTH(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))
+-- PostgreSQL
 WHERE (CARDINALITY(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))
+-- DuckDB
+WHERE (length(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE NOT (elem >= 18)))
+-- ClickHouse
+WHERE (length(ages) > 0 AND arrayAll(elem -> elem >= 18, ages))
 ```
 
-> **Note:** The `CARDINALITY > 0` guard ensures JSONLogic spec compliance — `{"all": [[], condition]}` returns `false` (not `true`). ClickHouse uses `length()` instead of `CARDINALITY()`.
+> **Note:** The array length guard ensures JSONLogic spec compliance — `{"all": [[], condition]}` returns `false` (not `true`). Each dialect uses its native array length function: `ARRAY_LENGTH` (BigQuery/Spanner), `CARDINALITY` (PostgreSQL), `length` (DuckDB/ClickHouse).
 
 ### Some Elements Satisfy Condition
 
