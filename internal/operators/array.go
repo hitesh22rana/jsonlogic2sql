@@ -2,9 +2,18 @@ package operators
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+)
+
+// Word-boundary patterns for replacing element references in pre-processed SQL strings.
+// These handle ProcessedValue strings from custom operators where the AST rewrite
+// cannot reach. Word boundaries prevent corrupting identifiers like "current_balance".
+var (
+	itemWordBoundary    = regexp.MustCompile(`\b` + regexp.QuoteMeta(ItemVar) + `\b`)
+	currentWordBoundary = regexp.MustCompile(`\b` + regexp.QuoteMeta(CurrentVar) + `\b`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -154,23 +163,21 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 
-	// Second argument: transformation expression
-	transformation, err := a.expressionToSQL(args[1])
+	// Second argument: transformation expression — rewrite element vars before SQL generation
+	rewritten := a.rewriteElementVars(args[1])
+	transformation, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
 
-	// Replace element reference in transformation
-	transformationWithElem := a.replaceElementReference(transformation)
-
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformationWithElem, array), nil
+		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformation, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformationWithElem, array), nil
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformationWithElem, array), nil
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
 }
 
 // handleFilter converts filter operator to SQL.
@@ -199,23 +206,21 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 
-	// Second argument: condition expression
-	condition, err := a.expressionToSQL(args[1])
+	// Second argument: condition expression — rewrite element vars before SQL generation
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
 
-	// Replace element reference in condition
-	conditionWithElem := a.replaceElementReference(condition)
-
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", conditionWithElem, array), nil
+		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 }
 
 // handleReduce converts reduce operator to SQL.
@@ -288,16 +293,12 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 			initial, pattern.function, elemRef, array), nil
 	}
 
-	// General case: evaluate reducer expression with element reference
-	reducer, err := a.expressionToSQL(reducerExpr)
+	// General case: rewrite element and accumulator vars in the AST, then generate SQL
+	rewritten := a.rewriteReduceVars(reducerExpr, initial)
+	reducerWithElem, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
-
-	// Replace variable references
-	reducerWithElem := a.replaceElementReference(reducer)
-	// Replace accumulator with initial for the subquery context
-	reducerWithElem = strings.ReplaceAll(reducerWithElem, AccumulatorVar, initial)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -426,14 +427,12 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 
-	// Second argument: condition expression
-	condition, err := a.expressionToSQL(args[1])
+	// Second argument: condition expression — rewrite element vars before SQL generation
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
-
-	// Replace 'elem' in condition with the actual element reference
-	conditionWithElem := a.replaceElementReference(condition)
 
 	// Generate SQL based on dialect
 	// JSONLogic spec: {"all": [[], condition]} returns false (empty array = false).
@@ -442,11 +441,11 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	lengthCheck := a.config.ArrayLengthFunc(array)
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("(%s > 0 AND arrayAll(elem -> %s, %s))", lengthCheck, conditionWithElem, array), nil
+		return fmt.Sprintf("(%s > 0 AND arrayAll(elem -> %s, %s))", lengthCheck, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, conditionWithElem), nil
+		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
 	}
-	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, conditionWithElem), nil
+	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
 }
 
 // handleSome converts some operator to SQL.
@@ -476,24 +475,22 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 
-	// Second argument: condition expression
-	condition, err := a.expressionToSQL(args[1])
+	// Second argument: condition expression — rewrite element vars before SQL generation
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
 
-	// Replace element reference in condition
-	conditionWithElem := a.replaceElementReference(condition)
-
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayExists(elem -> %s, %s)", conditionWithElem, array), nil
+		return fmt.Sprintf("arrayExists(elem -> %s, %s)", condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 	}
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 }
 
 // handleNone converts none operator to SQL.
@@ -523,24 +520,22 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 
-	// Second argument: condition expression
-	condition, err := a.expressionToSQL(args[1])
+	// Second argument: condition expression — rewrite element vars before SQL generation
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
 
-	// Replace element reference in condition
-	conditionWithElem := a.replaceElementReference(condition)
-
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", conditionWithElem, array), nil
+		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: NOT EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
-		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 	}
-	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, conditionWithElem), nil
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
 }
 
 // handleMerge converts merge operator to SQL.
@@ -703,17 +698,179 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 	return "", fmt.Errorf("invalid expression type: %T", expr)
 }
 
-// replaceElementReference replaces element references in conditions.
-// For now, this is a simple implementation that assumes the condition uses a variable.
-// It replaces "item" and "current" references with "elem" for UNNEST subqueries.
-func (a *ArrayOperator) replaceElementReference(condition string) string {
-	// Replace variable references in the condition with the element name
-	// This handles cases where {"var": "item"} or {"var": "current"} should become "elem"
-	// Simple string replacement for now - in a more complex implementation,
-	// you'd want to parse the SQL and replace variable references properly
-	result := strings.ReplaceAll(condition, ItemVar, ElemVar)
-	result = strings.ReplaceAll(result, CurrentVar, ElemVar)
-	return result
+// mapElementVarName maps JSONLogic element variable names to the SQL UNNEST alias.
+// Returns the mapped name, or the original if no mapping applies.
+// Only exact matches ("item", "current", "") and dot-prefix matches ("item.", "current.")
+// are mapped — this prevents corrupting field names like "current_balance" or "item_count".
+func (a *ArrayOperator) mapElementVarName(varStr string) string {
+	// Exact matches for element references
+	// Note: empty string ("") is NOT rewritten here — it's handled by expressionToSQL's
+	// special case which returns ElemVar directly without schema validation.
+	if varStr == ItemVar || varStr == CurrentVar {
+		return ElemVar
+	}
+	// Dot-notation: "item.field" → "elem.field", "current.field" → "elem.field"
+	if strings.HasPrefix(varStr, ItemVar+".") {
+		return ElemVar + varStr[len(ItemVar):]
+	}
+	if strings.HasPrefix(varStr, CurrentVar+".") {
+		return ElemVar + varStr[len(CurrentVar):]
+	}
+	return varStr
+}
+
+// isArrayOperator returns true if the operator is an array operator that
+// introduces its own element scope. Used to prevent rewriting into nested scopes.
+func (a *ArrayOperator) isArrayOperator(op string) bool {
+	switch op {
+	case OpMap, OpFilter, OpReduce, OpAll, OpSome, OpNone:
+		return true
+	}
+	return false
+}
+
+// rewriteElementVars walks the JSONLogic AST and rewrites element variable
+// references ("item", "current", "") to the UNNEST alias ("elem") before SQL
+// generation. This replaces the old post-hoc string replacement approach which
+// corrupted field names containing "item" or "current" as substrings.
+//
+// When a nested array operator is encountered, only its array source argument
+// (args[0]) is rewritten — the lambda/condition (args[1+]) is left for the
+// nested operator to handle, preserving correct variable scoping.
+func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
+	switch e := expr.(type) {
+	case ProcessedValue:
+		// Pre-processed SQL from custom operators — use word-boundary regex
+		if e.IsSQL {
+			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
+			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
+			if replaced != e.Value {
+				return ProcessedValue{Value: replaced, IsSQL: true}
+			}
+		}
+		return e
+	case map[string]interface{}:
+		if len(e) == 1 {
+			// Check for var expression
+			if varName, hasVar := e[OpVar]; hasVar {
+				if varStr, ok := varName.(string); ok {
+					mapped := a.mapElementVarName(varStr)
+					if mapped != varStr {
+						return map[string]interface{}{OpVar: mapped}
+					}
+				}
+				return e
+			}
+			// Check for nested array operator — don't rewrite its lambda body
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					if arr, ok := opArgs.([]interface{}); ok {
+						newArgs := make([]interface{}, len(arr))
+						copy(newArgs, arr)
+						// Only rewrite args[0] (array source — outer scope)
+						if len(newArgs) > 0 {
+							newArgs[0] = a.rewriteElementVars(arr[0])
+						}
+						return map[string]interface{}{opName: newArgs}
+					}
+				}
+			}
+			// Regular single-key operator — recursively rewrite values
+			for opName, opArgs := range e {
+				return map[string]interface{}{opName: a.rewriteElementVars(opArgs)}
+			}
+		}
+		// Multi-key map — recursively rewrite all values
+		result := make(map[string]interface{}, len(e))
+		for k, v := range e {
+			result[k] = a.rewriteElementVars(v)
+		}
+		return result
+
+	case []interface{}:
+		result := make([]interface{}, len(e))
+		for i, v := range e {
+			result[i] = a.rewriteElementVars(v)
+		}
+		return result
+
+	default:
+		return expr
+	}
+}
+
+// rewriteReduceVars walks the JSONLogic AST and rewrites both element variable
+// references and accumulator references for the reduce operator. Like
+// rewriteElementVars, it respects nested array operator scope boundaries.
+func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) interface{} {
+	switch e := expr.(type) {
+	case ProcessedValue:
+		// Pre-processed SQL from custom operators — use word-boundary regex
+		if e.IsSQL {
+			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
+			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
+			if replaced != e.Value {
+				return ProcessedValue{Value: replaced, IsSQL: true}
+			}
+		}
+		return e
+	case map[string]interface{}:
+		if len(e) == 1 {
+			// Check for var expression
+			if varName, hasVar := e[OpVar]; hasVar {
+				if varStr, ok := varName.(string); ok {
+					// Map element refs (item, current, "")
+					mapped := a.mapElementVarName(varStr)
+					if mapped != varStr {
+						return map[string]interface{}{OpVar: mapped}
+					}
+					// Map accumulator (exact or dot-prefix)
+					if varStr == AccumulatorVar {
+						return ProcessedValue{Value: initialSQL, IsSQL: true}
+					}
+					if strings.HasPrefix(varStr, AccumulatorVar+".") {
+						suffix := varStr[len(AccumulatorVar):]
+						return ProcessedValue{Value: initialSQL + suffix, IsSQL: true}
+					}
+				}
+				return e
+			}
+			// Check for nested array operator — don't rewrite its lambda body
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					if arr, ok := opArgs.([]interface{}); ok {
+						newArgs := make([]interface{}, len(arr))
+						copy(newArgs, arr)
+						// Only rewrite args[0] (array source — outer scope)
+						if len(newArgs) > 0 {
+							newArgs[0] = a.rewriteReduceVars(arr[0], initialSQL)
+						}
+						return map[string]interface{}{opName: newArgs}
+					}
+				}
+			}
+			// Regular single-key operator — recursively rewrite values
+			for opName, opArgs := range e {
+				return map[string]interface{}{opName: a.rewriteReduceVars(opArgs, initialSQL)}
+			}
+		}
+		// Multi-key map — recursively rewrite all values
+		result := make(map[string]interface{}, len(e))
+		for k, v := range e {
+			result[k] = a.rewriteReduceVars(v, initialSQL)
+		}
+		return result
+
+	case []interface{}:
+		result := make([]interface{}, len(e))
+		for i, v := range e {
+			result[i] = a.rewriteReduceVars(v, initialSQL)
+		}
+		return result
+
+	default:
+		return expr
+	}
 }
 
 // isPrimitive checks if a value is a primitive type.
