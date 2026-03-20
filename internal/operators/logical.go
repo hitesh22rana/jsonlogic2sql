@@ -186,12 +186,8 @@ func (l *LogicalOperator) generateTypeSafeTruthiness(condition, fieldName string
 
 	case schema.IsArrayType(fieldName):
 		// For array fields: check non-null and non-empty
-		// Use CARDINALITY which is supported by BigQuery, Spanner, PostgreSQL, DuckDB
-		// For ClickHouse, use length()
-		if l.config != nil && l.config.GetDialect().String() == "ClickHouse" {
-			return fmt.Sprintf("(%s IS NOT NULL AND length(%s) > 0)", condition, condition), nil
-		}
-		return fmt.Sprintf("(%s IS NOT NULL AND CARDINALITY(%s) > 0)", condition, condition), nil
+		lengthCheck := l.config.ArrayLengthFunc(condition)
+		return fmt.Sprintf("(%s IS NOT NULL AND %s > 0)", condition, lengthCheck), nil
 
 	default:
 		// Unknown type or field not in schema: use generic check

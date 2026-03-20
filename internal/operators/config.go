@@ -82,6 +82,19 @@ func (c *OperatorConfig) IsClickHouse() bool {
 	return c.GetDialect() == dialect.DialectClickHouse
 }
 
+// ArrayLengthFunc returns the dialect-specific SQL function call for array length.
+func (c *OperatorConfig) ArrayLengthFunc(expr string) string {
+	switch c.GetDialect() {
+	case dialect.DialectPostgreSQL:
+		return fmt.Sprintf("CARDINALITY(%s)", expr)
+	case dialect.DialectClickHouse, dialect.DialectDuckDB:
+		return fmt.Sprintf("length(%s)", expr)
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner:
+		return fmt.Sprintf("ARRAY_LENGTH(%s)", expr)
+	}
+	return fmt.Sprintf("ARRAY_LENGTH(%s)", expr)
+}
+
 // SetExpressionParser sets the callback for parsing nested expressions.
 // This should be called by the parser after all operators are created.
 func (c *OperatorConfig) SetExpressionParser(parser ExpressionParser) {
