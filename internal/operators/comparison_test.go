@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -709,5 +710,954 @@ func TestComparisonOperator_processMinMaxExpression(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// comparisonSchemaProvider is a configurable schema provider for comparison tests.
+type comparisonSchemaProvider struct {
+	fields      map[string]string   // field name -> type
+	enumValues  map[string][]string // field name -> allowed values
+	knownFields map[string]bool     // fields that exist
+}
+
+func newComparisonSchemaProvider(fields map[string]string) *comparisonSchemaProvider {
+	known := make(map[string]bool)
+	for k := range fields {
+		known[k] = true
+	}
+	return &comparisonSchemaProvider{
+		fields:      fields,
+		enumValues:  make(map[string][]string),
+		knownFields: known,
+	}
+}
+
+func (m *comparisonSchemaProvider) HasField(fieldName string) bool {
+	return m.knownFields[fieldName]
+}
+
+func (m *comparisonSchemaProvider) GetFieldType(fieldName string) string {
+	return m.fields[fieldName]
+}
+
+func (m *comparisonSchemaProvider) ValidateField(_ string) error {
+	return nil
+}
+
+func (m *comparisonSchemaProvider) IsArrayType(fieldName string) bool {
+	return m.fields[fieldName] == "array"
+}
+
+func (m *comparisonSchemaProvider) IsStringType(fieldName string) bool {
+	return m.fields[fieldName] == "string"
+}
+
+func (m *comparisonSchemaProvider) IsNumericType(fieldName string) bool {
+	t := m.fields[fieldName]
+	return t == "integer" || t == "number"
+}
+
+func (m *comparisonSchemaProvider) IsBooleanType(fieldName string) bool {
+	return m.fields[fieldName] == "boolean"
+}
+
+func (m *comparisonSchemaProvider) IsEnumType(fieldName string) bool {
+	_, ok := m.enumValues[fieldName]
+	return ok
+}
+
+func (m *comparisonSchemaProvider) GetAllowedValues(fieldName string) []string {
+	return m.enumValues[fieldName]
+}
+
+func (m *comparisonSchemaProvider) ValidateEnumValue(fieldName, value string) error {
+	allowed := m.enumValues[fieldName]
+	for _, v := range allowed {
+		if v == value {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid enum value '%s' for field '%s'", value, fieldName)
+}
+
+func TestComparisonOperator_arrayMembershipSQL(t *testing.T) {
+	tests := []struct {
+		name     string
+		dialect  dialect.Dialect
+		valueSQL string
+		arraySQL string
+		expected string
+	}{
+		{
+			name:     "BigQuery - IN UNNEST",
+			dialect:  dialect.DialectBigQuery,
+			valueSQL: "'test'",
+			arraySQL: "tags",
+			expected: "'test' IN UNNEST(tags)",
+		},
+		{
+			name:     "Spanner - IN UNNEST",
+			dialect:  dialect.DialectSpanner,
+			valueSQL: "'test'",
+			arraySQL: "tags",
+			expected: "'test' IN UNNEST(tags)",
+		},
+		{
+			name:     "PostgreSQL - ANY",
+			dialect:  dialect.DialectPostgreSQL,
+			valueSQL: "'test'",
+			arraySQL: "tags",
+			expected: "'test' = ANY(tags)",
+		},
+		{
+			name:     "DuckDB - list_contains",
+			dialect:  dialect.DialectDuckDB,
+			valueSQL: "'test'",
+			arraySQL: "tags",
+			expected: "list_contains(tags, 'test')",
+		},
+		{
+			name:     "ClickHouse - has",
+			dialect:  dialect.DialectClickHouse,
+			valueSQL: "'test'",
+			arraySQL: "tags",
+			expected: "has(tags, 'test')",
+		},
+		{
+			name:     "Unspecified dialect - fallback to IN UNNEST",
+			dialect:  dialect.DialectUnspecified,
+			valueSQL: "42",
+			arraySQL: "numbers",
+			expected: "42 IN UNNEST(numbers)",
+		},
+		{
+			name:     "nil config - fallback to IN UNNEST",
+			dialect:  dialect.Dialect(0), // placeholder, will use nil config
+			valueSQL: "'val'",
+			arraySQL: "arr",
+			expected: "'val' IN UNNEST(arr)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var op *ComparisonOperator
+			if tt.name == "nil config - fallback to IN UNNEST" {
+				op = NewComparisonOperator(nil)
+			} else {
+				config := NewOperatorConfig(tt.dialect, nil)
+				op = NewComparisonOperator(config)
+			}
+			result := op.arrayMembershipSQL(tt.valueSQL, tt.arraySQL)
+			if result != tt.expected {
+				t.Errorf("arrayMembershipSQL() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_coerceValueForComparison(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"age":         "integer",
+		"price":       "number",
+		"name":        "string",
+		"description": "string",
+		"is_active":   "boolean",
+		"tags":        "array",
+	})
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name      string
+		value     interface{}
+		fieldName string
+		expected  interface{}
+	}{
+		// String-to-number coercion for numeric fields
+		{
+			name:      "string integer to numeric field",
+			value:     "50000",
+			fieldName: "age",
+			expected:  int64(50000),
+		},
+		{
+			name:      "string float to numeric field",
+			value:     "3.14",
+			fieldName: "price",
+			expected:  float64(3.14),
+		},
+		{
+			name:      "non-numeric string to numeric field (no coercion)",
+			value:     "hello",
+			fieldName: "age",
+			expected:  "hello",
+		},
+		// Number-to-string coercion for string fields
+		{
+			name:      "float64 integer to string field",
+			value:     float64(5960),
+			fieldName: "name",
+			expected:  "5960",
+		},
+		{
+			name:      "float64 fractional to string field",
+			value:     float64(3.14),
+			fieldName: "name",
+			expected:  "3.14",
+		},
+		{
+			name:      "float32 to string field",
+			value:     float32(1.5),
+			fieldName: "name",
+			expected:  "1.5",
+		},
+		{
+			name:      "int to string field",
+			value:     42,
+			fieldName: "name",
+			expected:  "42",
+		},
+		{
+			name:      "int8 to string field",
+			value:     int8(10),
+			fieldName: "name",
+			expected:  "10",
+		},
+		{
+			name:      "int16 to string field",
+			value:     int16(100),
+			fieldName: "name",
+			expected:  "100",
+		},
+		{
+			name:      "int32 to string field",
+			value:     int32(1000),
+			fieldName: "name",
+			expected:  "1000",
+		},
+		{
+			name:      "int64 to string field",
+			value:     int64(9999),
+			fieldName: "name",
+			expected:  "9999",
+		},
+		{
+			name:      "uint to string field",
+			value:     uint(7),
+			fieldName: "name",
+			expected:  "7",
+		},
+		{
+			name:      "uint8 to string field",
+			value:     uint8(8),
+			fieldName: "name",
+			expected:  "8",
+		},
+		{
+			name:      "uint16 to string field",
+			value:     uint16(16),
+			fieldName: "name",
+			expected:  "16",
+		},
+		{
+			name:      "uint32 to string field",
+			value:     uint32(32),
+			fieldName: "name",
+			expected:  "32",
+		},
+		{
+			name:      "uint64 to string field",
+			value:     uint64(64),
+			fieldName: "name",
+			expected:  "64",
+		},
+		// No coercion cases
+		{
+			name:      "nil schema returns value as-is",
+			value:     "test",
+			fieldName: "",
+			expected:  "test",
+		},
+		{
+			name:      "boolean field - no coercion",
+			value:     "true",
+			fieldName: "is_active",
+			expected:  "true",
+		},
+		{
+			name:      "array field - no coercion",
+			value:     "something",
+			fieldName: "tags",
+			expected:  "something",
+		},
+		{
+			name:      "number already a number for numeric field",
+			value:     42,
+			fieldName: "age",
+			expected:  42,
+		},
+		{
+			name:      "string already a string for string field",
+			value:     "hello",
+			fieldName: "name",
+			expected:  "hello",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := op.coerceValueForComparison(tt.value, tt.fieldName)
+			if fmt.Sprintf("%v", result) != fmt.Sprintf("%v", tt.expected) {
+				t.Errorf("coerceValueForComparison() = %v (%T), want %v (%T)", result, result, tt.expected, tt.expected)
+			}
+		})
+	}
+
+	// Test with nil schema
+	opNoSchema := NewComparisonOperator(nil)
+	result := opNoSchema.coerceValueForComparison("50000", "age")
+	if result != "50000" {
+		t.Errorf("coerceValueForComparison() with nil schema = %v, want '50000'", result)
+	}
+}
+
+func TestComparisonOperator_validateEnumValue(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"status":  "string",
+		"country": "string",
+		"age":     "integer",
+	})
+	schema.enumValues["status"] = []string{"active", "inactive", "pending"}
+	schema.enumValues["country"] = []string{"US", "UK", "JP"}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name      string
+		value     interface{}
+		fieldName string
+		hasError  bool
+	}{
+		{
+			name:      "valid enum value",
+			value:     "active",
+			fieldName: "status",
+			hasError:  false,
+		},
+		{
+			name:      "another valid enum value",
+			value:     "pending",
+			fieldName: "status",
+			hasError:  false,
+		},
+		{
+			name:      "invalid enum value",
+			value:     "deleted",
+			fieldName: "status",
+			hasError:  true,
+		},
+		{
+			name:      "valid country enum value",
+			value:     "US",
+			fieldName: "country",
+			hasError:  false,
+		},
+		{
+			name:      "invalid country enum value",
+			value:     "XX",
+			fieldName: "country",
+			hasError:  true,
+		},
+		{
+			name:      "null value skips validation",
+			value:     nil,
+			fieldName: "status",
+			hasError:  false,
+		},
+		{
+			name:      "non-enum field skips validation",
+			value:     "anything",
+			fieldName: "age",
+			hasError:  false,
+		},
+		{
+			name:      "empty field name skips validation",
+			value:     "something",
+			fieldName: "",
+			hasError:  false,
+		},
+		{
+			name:      "non-string value converted to string for validation",
+			value:     123,
+			fieldName: "status",
+			hasError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := op.validateEnumValue(tt.value, tt.fieldName)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("validateEnumValue() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateEnumValue() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+
+	// Test with nil schema
+	opNoSchema := NewComparisonOperator(nil)
+	if err := opNoSchema.validateEnumValue("anything", "status"); err != nil {
+		t.Errorf("validateEnumValue() with nil schema should return nil, got %v", err)
+	}
+}
+
+func TestComparisonOperator_extractFieldName(t *testing.T) {
+	op := NewComparisonOperator(nil)
+
+	tests := []struct {
+		name     string
+		varName  interface{}
+		expected string
+	}{
+		{
+			name:     "string var name",
+			varName:  "fieldName",
+			expected: "fieldName",
+		},
+		{
+			name:     "array with string first element",
+			varName:  []interface{}{"fieldName", "default"},
+			expected: "fieldName",
+		},
+		{
+			name:     "array with non-string first element",
+			varName:  []interface{}{123, "default"},
+			expected: "",
+		},
+		{
+			name:     "empty array",
+			varName:  []interface{}{},
+			expected: "",
+		},
+		{
+			name:     "numeric var name",
+			varName:  42,
+			expected: "",
+		},
+		{
+			name:     "nil var name",
+			varName:  nil,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := op.extractFieldName(tt.varName)
+			if result != tt.expected {
+				t.Errorf("extractFieldName() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_valueToSQL_Extended(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+		hasError bool
+	}{
+		// ProcessedValue - SQL
+		{
+			name:     "ProcessedValue with SQL",
+			input:    ProcessedValue{Value: "some_column > 5", IsSQL: true},
+			expected: "some_column > 5",
+			hasError: false,
+		},
+		// ProcessedValue - Literal
+		{
+			name:     "ProcessedValue with literal string",
+			input:    ProcessedValue{Value: "hello", IsSQL: false},
+			expected: "'hello'",
+			hasError: false,
+		},
+		// nil value
+		{
+			name:     "nil value",
+			input:    nil,
+			expected: "NULL",
+			hasError: false,
+		},
+		// boolean false
+		{
+			name:     "boolean false",
+			input:    false,
+			expected: "FALSE",
+			hasError: false,
+		},
+		// empty var name (current element reference)
+		{
+			name:     "empty var name returns elem",
+			input:    map[string]interface{}{"var": ""},
+			expected: "elem",
+			hasError: false,
+		},
+		// Arithmetic expression inside comparison
+		{
+			name:     "addition expression",
+			input:    map[string]interface{}{"+": []interface{}{map[string]interface{}{"var": "x"}, 10}},
+			expected: "(x + 10)",
+			hasError: false,
+		},
+		{
+			name:     "subtraction expression",
+			input:    map[string]interface{}{"-": []interface{}{map[string]interface{}{"var": "x"}, 5}},
+			expected: "(x - 5)",
+			hasError: false,
+		},
+		{
+			name:     "multiplication expression",
+			input:    map[string]interface{}{"*": []interface{}{map[string]interface{}{"var": "x"}, 2}},
+			expected: "(x * 2)",
+			hasError: false,
+		},
+		{
+			name:     "division expression",
+			input:    map[string]interface{}{"/": []interface{}{map[string]interface{}{"var": "x"}, 2}},
+			expected: "(x / 2)",
+			hasError: false,
+		},
+		{
+			name:     "modulo expression",
+			input:    map[string]interface{}{"%": []interface{}{map[string]interface{}{"var": "x"}, 3}},
+			expected: "(x % 3)",
+			hasError: false,
+		},
+		// Comparison expression inside comparison
+		{
+			name:     "nested greater than expression",
+			input:    map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "a"}, 5}},
+			expected: "(a > 5)",
+			hasError: false,
+		},
+		// Min/Max expression
+		{
+			name:     "max expression",
+			input:    map[string]interface{}{"max": []interface{}{map[string]interface{}{"var": "a"}, 100}},
+			expected: "GREATEST(a, 100)",
+			hasError: false,
+		},
+		{
+			name:     "min expression",
+			input:    map[string]interface{}{"min": []interface{}{map[string]interface{}{"var": "a"}, 0}},
+			expected: "LEAST(a, 0)",
+			hasError: false,
+		},
+		// If expression
+		{
+			name: "if expression",
+			input: map[string]interface{}{"if": []interface{}{
+				map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+				"positive",
+				"negative",
+			}},
+			expected: "CASE WHEN x > 0 THEN 'positive' ELSE 'negative' END",
+			hasError: false,
+		},
+		{
+			name:     "if expression non-array args error",
+			input:    map[string]interface{}{"if": "invalid"},
+			expected: "",
+			hasError: true,
+		},
+		// Cat/Substr string operations
+		{
+			name:     "cat expression",
+			input:    map[string]interface{}{"cat": []interface{}{"hello", " ", "world"}},
+			expected: "CONCAT('hello', ' ', 'world')",
+			hasError: false,
+		},
+		{
+			name:     "cat expression non-array error",
+			input:    map[string]interface{}{"cat": "invalid"},
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "substr expression",
+			input:    map[string]interface{}{"substr": []interface{}{"hello", 1, 3}},
+			expected: "SUBSTR('hello', 2, 3)",
+			hasError: false,
+		},
+		{
+			name:     "substr expression non-array error",
+			input:    map[string]interface{}{"substr": "invalid"},
+			expected: "",
+			hasError: true,
+		},
+		// Array should error
+		{
+			name:     "array value should error",
+			input:    []interface{}{1, 2, 3},
+			expected: "",
+			hasError: true,
+		},
+		// Array operators
+		{
+			name: "reduce expression non-array error",
+			input: map[string]interface{}{
+				"reduce": "invalid",
+			},
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.valueToSQL(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("valueToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("valueToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_handleIn_WithVarRightSide(t *testing.T) {
+	// Test in with var on right side and schema indicating array type
+	schema := newComparisonSchemaProvider(map[string]string{
+		"tags":        "array",
+		"description": "string",
+		"name":        "string",
+	})
+
+	tests := []struct {
+		name     string
+		dialect  dialect.Dialect
+		leftArg  interface{}
+		rightArg interface{}
+		expected string
+		hasError bool
+	}{
+		// Array field on right side: use arrayMembershipSQL
+		{
+			name:     "BigQuery in with array var on right",
+			dialect:  dialect.DialectBigQuery,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "tags"},
+			expected: "'test' IN UNNEST(tags)",
+			hasError: false,
+		},
+		{
+			name:     "PostgreSQL in with array var on right",
+			dialect:  dialect.DialectPostgreSQL,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "tags"},
+			expected: "'test' = ANY(tags)",
+			hasError: false,
+		},
+		{
+			name:     "DuckDB in with array var on right",
+			dialect:  dialect.DialectDuckDB,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "tags"},
+			expected: "list_contains(tags, 'test')",
+			hasError: false,
+		},
+		{
+			name:     "ClickHouse in with array var on right",
+			dialect:  dialect.DialectClickHouse,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "tags"},
+			expected: "has(tags, 'test')",
+			hasError: false,
+		},
+		// String field on right side: use STRPOS
+		{
+			name:     "BigQuery in with string var on right",
+			dialect:  dialect.DialectBigQuery,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "description"},
+			expected: "STRPOS(description, 'test') > 0",
+			hasError: false,
+		},
+		{
+			name:     "PostgreSQL in with string var on right",
+			dialect:  dialect.DialectPostgreSQL,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "description"},
+			expected: "POSITION('test' IN description) > 0",
+			hasError: false,
+		},
+		{
+			name:     "ClickHouse in with string var on right",
+			dialect:  dialect.DialectClickHouse,
+			leftArg:  "test",
+			rightArg: map[string]interface{}{"var": "description"},
+			expected: "position(description, 'test') > 0",
+			hasError: false,
+		},
+		// Number containment (right side is a number literal)
+		{
+			name:     "in with number on right side",
+			dialect:  dialect.DialectBigQuery,
+			leftArg:  "3",
+			rightArg: float64(12345),
+			expected: "POSITION('3' IN 12345) > 0",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := NewOperatorConfig(tt.dialect, schema)
+			op := NewComparisonOperator(config)
+			result, err := op.ToSQL("in", []interface{}{tt.leftArg, tt.rightArg})
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("ToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_handleIn_NoSchema_VarRightSide(t *testing.T) {
+	// Without schema, test heuristic based on left side being a literal
+	op := NewComparisonOperator(nil)
+
+	tests := []struct {
+		name     string
+		leftArg  interface{}
+		rightArg interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "literal string left and var right - string containment",
+			leftArg:  "search",
+			rightArg: map[string]interface{}{"var": "field"},
+			expected: "STRPOS(field, 'search') > 0",
+			hasError: false,
+		},
+		{
+			name:     "var left and var right - array membership fallback",
+			leftArg:  map[string]interface{}{"var": "item"},
+			rightArg: map[string]interface{}{"var": "collection"},
+			expected: "item IN UNNEST(collection)",
+			hasError: false,
+		},
+		{
+			name:     "in with unsupported right side type",
+			leftArg:  "test",
+			rightArg: true,
+			expected: "",
+			hasError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.ToSQL("in", []interface{}{tt.leftArg, tt.rightArg})
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("ToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_handleIn_WithEnumValidation(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"status": "string",
+	})
+	schema.enumValues["status"] = []string{"active", "inactive", "pending"}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	// Valid enum values in array
+	result, err := op.ToSQL("in", []interface{}{
+		map[string]interface{}{"var": "status"},
+		[]interface{}{"active", "pending"},
+	})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	expected := "status IN ('active', 'pending')"
+	if result != expected {
+		t.Errorf("ToSQL() = %v, want %v", result, expected)
+	}
+
+	// Invalid enum values in array
+	_, err = op.ToSQL("in", []interface{}{
+		map[string]interface{}{"var": "status"},
+		[]interface{}{"active", "deleted"},
+	})
+	if err == nil {
+		t.Errorf("ToSQL() expected error for invalid enum value, got nil")
+	}
+}
+
+func TestComparisonOperator_ToSQL_WithSchemaCoercion(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"age":  "integer",
+		"name": "string",
+	})
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []interface{}
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "string to number coercion - left field numeric, right literal string",
+			operator: ">=",
+			args:     []interface{}{map[string]interface{}{"var": "age"}, "50000"},
+			expected: "age >= 50000",
+			hasError: false,
+		},
+		{
+			name:     "number to string coercion - left field string, right literal number",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "name"}, float64(5960)},
+			expected: "name = '5960'",
+			hasError: false,
+		},
+		{
+			name:     "coercion for right field and left literal",
+			operator: "==",
+			args:     []interface{}{"50000", map[string]interface{}{"var": "age"}},
+			expected: "50000 = age",
+			hasError: false,
+		},
+		{
+			name:     "coercion for right field string and left literal number",
+			operator: "==",
+			args:     []interface{}{float64(42), map[string]interface{}{"var": "name"}},
+			expected: "'42' = name",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := op.ToSQL(tt.operator, tt.args)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ToSQL() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ToSQL() unexpected error = %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("ToSQL() = %v, want %v", result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_handleIn_WithSchemaArrayVar(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"tags": "array",
+	})
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	// Test in with array-type field on right side (array membership)
+	result, err := op.ToSQL("in", []interface{}{
+		"test",
+		map[string]interface{}{"var": "tags"},
+	})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	expected := "'test' IN UNNEST(tags)"
+	if result != expected {
+		t.Errorf("ToSQL() = %v, want %v", result, expected)
+	}
+}
+
+func TestComparisonOperator_valueToSQL_ExpressionParserCallback(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.SetExpressionParser(func(expr any, path string) (string, error) {
+		return "CUSTOM_FUNC()", nil
+	})
+	op := NewComparisonOperator(config)
+
+	// Unknown operator with expression parser set should delegate
+	result, err := op.valueToSQL(map[string]interface{}{"customOp": []interface{}{1, 2}})
+	if err != nil {
+		t.Errorf("valueToSQL() unexpected error = %v", err)
+	}
+	if result != "CUSTOM_FUNC()" {
+		t.Errorf("valueToSQL() = %v, want CUSTOM_FUNC()", result)
+	}
+}
+
+func TestComparisonOperator_handleIn_StringCoercion(t *testing.T) {
+	// Test that number left side gets coerced to string when right side is a string field
+	schema := newComparisonSchemaProvider(map[string]string{
+		"name": "string",
+	})
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	// Number left side with string var on right - should coerce number to string
+	result, err := op.ToSQL("in", []interface{}{
+		float64(123),
+		map[string]interface{}{"var": "name"},
+	})
+	if err != nil {
+		t.Errorf("ToSQL() unexpected error = %v", err)
+	}
+	expected := "STRPOS(name, '123') > 0"
+	if result != expected {
+		t.Errorf("ToSQL() = %v, want %v", result, expected)
 	}
 }

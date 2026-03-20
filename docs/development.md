@@ -74,6 +74,7 @@ jsonlogic2sql/
 | `make lint` | Run linter |
 | `make lint/fix` | Run linter with auto-fix |
 | `make run` | Run REPL |
+| `make bench` | Run benchmarks |
 | `make deps` | Install dependencies |
 | `make help` | Show available commands |
 

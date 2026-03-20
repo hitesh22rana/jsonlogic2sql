@@ -99,6 +99,7 @@ SQL: WHERE (a || b)
 
 ```bash
 make test       # Run all tests (3,000+ test cases)
+make bench      # Run benchmarks
 make build      # Build REPL binary
 make build/wasm # Build WASM binary for browser playground
 make lint       # Run linter
