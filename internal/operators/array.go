@@ -650,7 +650,7 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 			}
 			elements[i] = elementSQL
 		}
-		return fmt.Sprintf("[%s]", strings.Join(elements, " ")), nil
+		return fmt.Sprintf("[%s]", strings.Join(elements, ", ")), nil
 	}
 
 	// Handle primitive values
