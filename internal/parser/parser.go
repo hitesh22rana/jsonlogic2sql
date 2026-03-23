@@ -3,6 +3,7 @@ package parser
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
@@ -420,7 +421,8 @@ func (p *Parser) processArgToSQL(arg interface{}, path string) (interface{}, err
 func (p *Parser) primitiveToSQL(value interface{}) interface{} {
 	switch v := value.(type) {
 	case string:
-		return fmt.Sprintf("'%s'", v)
+		escaped := strings.ReplaceAll(v, "'", "''")
+		return fmt.Sprintf("'%s'", escaped)
 	case bool:
 		if v {
 			return "TRUE"
