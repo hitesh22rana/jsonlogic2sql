@@ -2,6 +2,8 @@ package operators
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -306,10 +308,18 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 		return n.dataOp.valueToSQL(pv.Value)
 	}
 
-	// Handle pre-processed SQL strings from the parser
-	if sqlStr, ok := value.(string); ok {
-		// This is a pre-processed SQL string from the parser
-		return sqlStr, nil
+	// Handle plain strings: attempt numeric coercion per JSONLogic spec,
+	// otherwise treat as a safely-quoted literal to prevent SQL injection.
+	// Pre-processed SQL from the parser arrives as ProcessedValue (handled above),
+	// so any plain string here is a raw JSON literal.
+	if str, ok := value.(string); ok {
+		if num, err := strconv.ParseFloat(str, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
+			if num == float64(int64(num)) && !strings.Contains(str, ".") {
+				return fmt.Sprintf("%d", int64(num)), nil
+			}
+			return strconv.FormatFloat(num, 'f', -1, 64), nil
+		}
+		return n.dataOp.valueToSQL(str)
 	}
 
 	// Handle var expressions and complex expressions
@@ -381,17 +391,30 @@ func (n *NumericOperator) processComplexArgs(args []interface{}) ([]string, erro
 	return processed, nil
 }
 
-// processComplexArgsForComparison processes arguments for comparison operators
-// Returns []interface{} instead of []string to match comparison operator's expectations.
+// processComplexArgsForComparison processes arguments for comparison operators.
+// Var expressions and primitives are passed through so the comparison operator
+// can perform schema-based type coercion (e.g. number→string for string fields).
+// Only nested complex expressions (arithmetic, logical, etc.) are pre-evaluated
+// to SQL and wrapped in SQLResult.
 func (n *NumericOperator) processComplexArgsForComparison(args []interface{}) ([]interface{}, error) {
 	processed := make([]interface{}, len(args))
 
 	for i, arg := range args {
-		sql, err := n.valueToSQL(arg)
-		if err != nil {
-			return nil, err
+		if exprMap, ok := arg.(map[string]interface{}); ok && len(exprMap) == 1 {
+			if _, isVar := exprMap[OpVar]; isVar {
+				processed[i] = arg
+				continue
+			}
+			sql, err := n.valueToSQL(arg)
+			if err != nil {
+				return nil, err
+			}
+			processed[i] = SQLResult(sql)
+			continue
 		}
-		processed[i] = sql
+		// Primitives (string, float64, bool, nil) and ProcessedValue pass through
+		// so comparison can apply schema coercion and proper quoting.
+		processed[i] = arg
 	}
 
 	return processed, nil
