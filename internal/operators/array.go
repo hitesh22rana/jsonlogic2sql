@@ -170,6 +170,7 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
+	transformation = a.replaceElementRefsInSQL(transformation)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -213,6 +214,7 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
+	condition = a.replaceElementRefsInSQL(condition)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -300,6 +302,8 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
+	reducerWithElem = a.replaceElementRefsInSQL(reducerWithElem)
+	reducerWithElem = accumulatorWordBoundary.ReplaceAllLiteralString(reducerWithElem, initial)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -434,6 +438,7 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
+	condition = a.replaceElementRefsInSQL(condition)
 
 	// Generate SQL based on dialect
 	// JSONLogic spec: {"all": [[], condition]} returns false (empty array = false).
@@ -482,6 +487,7 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
+	condition = a.replaceElementRefsInSQL(condition)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -527,6 +533,7 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
+	condition = a.replaceElementRefsInSQL(condition)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -697,6 +704,16 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 	}
 
 	return "", fmt.Errorf("invalid expression type: %T", expr)
+}
+
+// replaceElementRefsInSQL applies word-boundary replacement of "item" and "current"
+// with "elem" in a final SQL string. This is a safety net for SQL produced by custom
+// operators or nested operator chains that may emit literal "item"/"current" tokens
+// not reachable by the AST-level rewrite.
+func (a *ArrayOperator) replaceElementRefsInSQL(sql string) string {
+	sql = itemWordBoundary.ReplaceAllString(sql, ElemVar)
+	sql = currentWordBoundary.ReplaceAllString(sql, ElemVar)
+	return sql
 }
 
 // mapElementVarName maps JSONLogic element variable names to the SQL UNNEST alias.
