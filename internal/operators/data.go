@@ -2,8 +2,13 @@ package operators
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// validIdentifier matches standard SQL identifiers with optional dot-notation
+// for nested field access: letters, digits, underscores, and dots.
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 
 // DataOperator handles data access operators (var, missing, missing_some).
 type DataOperator struct {
@@ -58,7 +63,10 @@ func (d *DataOperator) handleVar(args []interface{}) (string, error) {
 				return "", err
 			}
 		}
-		columnName := d.convertVarName(varName)
+		columnName, err := d.convertVarName(varName)
+		if err != nil {
+			return "", err
+		}
 		return columnName, nil
 	}
 
@@ -79,7 +87,10 @@ func (d *DataOperator) handleVar(args []interface{}) (string, error) {
 					return "", err
 				}
 			}
-			columnName := d.convertVarName(varName)
+			columnName, err := d.convertVarName(varName)
+			if err != nil {
+				return "", err
+			}
 
 			// If there's a default value, use COALESCE
 			if len(arr) > 1 {
@@ -116,7 +127,10 @@ func (d *DataOperator) handleMissing(args []interface{}) (string, error) {
 				return "", err
 			}
 		}
-		columnName := d.convertVarName(varName)
+		columnName, err := d.convertVarName(varName)
+		if err != nil {
+			return "", err
+		}
 		return fmt.Sprintf("%s IS NULL", columnName), nil
 	}
 
@@ -138,7 +152,10 @@ func (d *DataOperator) handleMissing(args []interface{}) (string, error) {
 					return "", err
 				}
 			}
-			columnName := d.convertVarName(name)
+			columnName, err := d.convertVarName(name)
+			if err != nil {
+				return "", err
+			}
 			nullConditions = append(nullConditions, fmt.Sprintf("%s IS NULL", columnName))
 		}
 
@@ -185,7 +202,10 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 					return "", err
 				}
 			}
-			columnName := d.convertVarName(name)
+			columnName, err := d.convertVarName(name)
+			if err != nil {
+				return "", err
+			}
 			nullConditions = append(nullConditions, fmt.Sprintf("%s IS NULL", columnName))
 		}
 		return fmt.Sprintf("(%s)", strings.Join(nullConditions, " OR ")), nil
@@ -205,7 +225,10 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 				return "", err
 			}
 		}
-		columnName := d.convertVarName(name)
+		columnName, err := d.convertVarName(name)
+		if err != nil {
+			return "", err
+		}
 		caseStatements = append(caseStatements, fmt.Sprintf("CASE WHEN %s IS NULL THEN 1 ELSE 0 END", columnName))
 	}
 
@@ -214,12 +237,19 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 	return fmt.Sprintf("(%s) >= %d", nullCount, int(minCount)), nil
 }
 
-// convertVarName converts a JSON Logic variable name to SQL column name
+// convertVarName converts a JSON Logic variable name to SQL column name.
 // Preserves dot notation for nested properties: "user.verified" -> "user.verified".
-func (d *DataOperator) convertVarName(varName string) string {
-	// Keep the original dot notation as-is for nested properties
-	// This allows for proper JSON column access in databases that support it
-	return varName
+// When no schema is configured, validates that the name matches a safe SQL identifier
+// pattern to prevent injection via malicious var names.
+func (d *DataOperator) convertVarName(varName string) (string, error) {
+	// When schema is set, it already validates field names — no extra check needed.
+	// When no schema, enforce identifier pattern as a safety net.
+	if d.schema() == nil {
+		if !validIdentifier.MatchString(varName) {
+			return "", fmt.Errorf("invalid identifier %q: must match [a-zA-Z_][a-zA-Z0-9_.]*", varName)
+		}
+	}
+	return varName, nil
 }
 
 // getNumber extracts a number from an interface{} and returns it as float64.

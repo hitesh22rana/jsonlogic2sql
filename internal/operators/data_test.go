@@ -228,27 +228,83 @@ func TestDataOperator_ToSQL(t *testing.T) {
 func TestDataOperator_convertVarName(t *testing.T) {
 	op := NewDataOperator(nil)
 
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"amount", "amount"},
-		{"transaction.amount", "transaction.amount"},
-		{"user.account.age", "user.account.age"},
-		{"a.b.c.d", "a.b.c.d"},
-		{"simple", "simple"},
-		{"", ""},
-	}
+	t.Run("valid identifiers", func(t *testing.T) {
+		valid := []struct {
+			input    string
+			expected string
+		}{
+			{"amount", "amount"},
+			{"transaction.amount", "transaction.amount"},
+			{"user.account.age", "user.account.age"},
+			{"a.b.c.d", "a.b.c.d"},
+			{"simple", "simple"},
+			{"_private", "_private"},
+			{"field_name", "field_name"},
+			{"Field123", "Field123"},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := op.convertVarName(tt.input)
-			if result != tt.expected {
-				t.Errorf("convertVarName(%s) = %s, expected %s", tt.input, result, tt.expected)
-			}
-		})
-	}
+		for _, tt := range valid {
+			t.Run(tt.input, func(t *testing.T) {
+				result, err := op.convertVarName(tt.input)
+				if err != nil {
+					t.Errorf("convertVarName(%q) unexpected error: %v", tt.input, err)
+				}
+				if result != tt.expected {
+					t.Errorf("convertVarName(%q) = %q, expected %q", tt.input, result, tt.expected)
+				}
+			})
+		}
+	})
+
+	t.Run("invalid identifiers rejected without schema", func(t *testing.T) {
+		invalid := []string{
+			"",
+			"1; DROP TABLE users; --",
+			"' OR 1=1 --",
+			"field name",
+			"field\ttab",
+			"123starts_with_number",
+			"field;name",
+			"(expression)",
+		}
+
+		for _, input := range invalid {
+			t.Run(input, func(t *testing.T) {
+				_, err := op.convertVarName(input)
+				if err == nil {
+					t.Errorf("convertVarName(%q) expected error, got none", input)
+				}
+			})
+		}
+	})
+
+	t.Run("schema bypasses identifier validation", func(t *testing.T) {
+		schema := &dataSchemaProvider{}
+		opWithSchema := NewDataOperator(NewOperatorConfig(0, schema))
+		// With schema, even unusual names pass through (schema validates separately)
+		result, err := opWithSchema.convertVarName("my field")
+		if err != nil {
+			t.Errorf("convertVarName with schema unexpected error: %v", err)
+		}
+		if result != "my field" {
+			t.Errorf("convertVarName with schema = %q, expected %q", result, "my field")
+		}
+	})
 }
+
+// dataSchemaProvider is a minimal schema provider for data operator tests.
+type dataSchemaProvider struct{}
+
+func (m *dataSchemaProvider) HasField(_ string) bool              { return true }
+func (m *dataSchemaProvider) GetFieldType(_ string) string        { return "string" }
+func (m *dataSchemaProvider) ValidateField(_ string) error        { return nil }
+func (m *dataSchemaProvider) IsArrayType(_ string) bool           { return false }
+func (m *dataSchemaProvider) IsStringType(_ string) bool          { return true }
+func (m *dataSchemaProvider) IsNumericType(_ string) bool         { return false }
+func (m *dataSchemaProvider) IsBooleanType(_ string) bool         { return false }
+func (m *dataSchemaProvider) IsEnumType(_ string) bool            { return false }
+func (m *dataSchemaProvider) GetAllowedValues(_ string) []string  { return nil }
+func (m *dataSchemaProvider) ValidateEnumValue(_, _ string) error { return nil }
 
 func TestDataOperator_valueToSQL(t *testing.T) {
 	op := NewDataOperator(nil)
