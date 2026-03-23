@@ -23,14 +23,24 @@ func escapeLikePattern(pattern string) string {
 	return pattern
 }
 
+// unescapeSQLString decodes a SQL string literal back to its raw value.
+// For quoted inputs (e.g., "'it”s'"), it strips the outer single quotes and
+// unescapes ” → '. Unquoted inputs pass through unchanged.
+func unescapeSQLString(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		s = s[1 : len(s)-1]
+		s = strings.ReplaceAll(s, "''", "'")
+	}
+	return s
+}
+
 // extractFromArrayString extracts value from array string representation like "[T]".
 func extractFromArrayString(s string) string {
-	// If it's an array representation like "[T]", extract "T"
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
-		inner := s[1 : len(s)-1] // Remove "[" and "]"
-		// Remove quotes if present
+		inner := s[1 : len(s)-1]
 		if len(inner) >= 2 && inner[0] == '\'' && inner[len(inner)-1] == '\'' {
-			return inner[1 : len(inner)-1]
+			inner = inner[1 : len(inner)-1]
+			return strings.ReplaceAll(inner, "''", "'")
 		}
 		return inner
 	}
@@ -76,10 +86,7 @@ func parseContainsArgs(args []interface{}) (column, pattern string) {
 		pattern = extractFromArrayString(pattern)
 	}
 
-	// Extract value from quoted string pattern.
-	if len(pattern) >= 2 && pattern[0] == '\'' && pattern[len(pattern)-1] == '\'' {
-		pattern = pattern[1 : len(pattern)-1]
-	}
+	pattern = unescapeSQLString(pattern)
 	return column, pattern
 }
 
@@ -363,11 +370,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := args[1].(string)
-		// Extract value from quoted string (e.g., "'T'" -> "T")
-		if len(pattern) >= 2 && pattern[0] == '\'' && pattern[len(pattern)-1] == '\'' {
-			pattern = pattern[1 : len(pattern)-1]
-		}
+		pattern := unescapeSQLString(args[1].(string))
 		return fmt.Sprintf("%s LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
 	})
 
@@ -377,11 +380,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("!startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := args[1].(string)
-		// Extract value from quoted string (e.g., "'T'" -> "T")
-		if len(pattern) >= 2 && pattern[0] == '\'' && pattern[len(pattern)-1] == '\'' {
-			pattern = pattern[1 : len(pattern)-1]
-		}
+		pattern := unescapeSQLString(args[1].(string))
 		return fmt.Sprintf("%s NOT LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
 	})
 
@@ -391,11 +390,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := args[1].(string)
-		// Extract value from quoted string
-		if len(pattern) >= 2 && pattern[0] == '\'' && pattern[len(pattern)-1] == '\'' {
-			pattern = pattern[1 : len(pattern)-1]
-		}
+		pattern := unescapeSQLString(args[1].(string))
 		return fmt.Sprintf("%s LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
 	})
 
@@ -405,11 +400,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("!endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := args[1].(string)
-		// Extract value from quoted string (e.g., "'T'" -> "T")
-		if len(pattern) >= 2 && pattern[0] == '\'' && pattern[len(pattern)-1] == '\'' {
-			pattern = pattern[1 : len(pattern)-1]
-		}
+		pattern := unescapeSQLString(args[1].(string))
 		return fmt.Sprintf("%s NOT LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
 	})
 
