@@ -8,13 +8,22 @@ import (
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 )
 
-// Word-boundary patterns for replacing element references in pre-processed SQL strings.
-// These handle ProcessedValue strings from custom operators where the AST rewrite
-// cannot reach. Word boundaries prevent corrupting identifiers like "current_balance".
+// Patterns for replacing element references in pre-processed SQL strings.
+// These match "item"/"current"/"accumulator" only when they appear as standalone
+// identifiers (not as suffixes like "account.current" or substrings like "current_balance").
+// The pattern requires either start-of-string or a non-word non-dot character before the
+// keyword, and a word boundary after it. This prevents false positives on:
+//   - "current_balance" (underscore is a word char, no \b before "current")
+//   - "account.current" (dot before "current" is blocked by [^\w.])
+//
+// But correctly matches:
+//   - standalone "current" → "elem"
+//   - "current.field" → "elem.field" (dot AFTER is fine, matched by \b)
+//   - "(current + 1)" → "(elem + 1)" (paren is non-word non-dot)
 var (
-	itemWordBoundary        = regexp.MustCompile(`\b` + regexp.QuoteMeta(ItemVar) + `\b`)
-	currentWordBoundary     = regexp.MustCompile(`\b` + regexp.QuoteMeta(CurrentVar) + `\b`)
-	accumulatorWordBoundary = regexp.MustCompile(`\b` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
+	itemPattern        = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(ItemVar) + `\b`)
+	currentPattern     = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(CurrentVar) + `\b`)
+	accumulatorPattern = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -303,7 +312,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
 	reducerWithElem = a.replaceElementRefsInSQL(reducerWithElem)
-	reducerWithElem = accumulatorWordBoundary.ReplaceAllLiteralString(reducerWithElem, initial)
+	reducerWithElem = accumulatorPattern.ReplaceAllString(reducerWithElem, "${1}"+regexp.QuoteMeta(initial))
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -711,8 +720,8 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 // operators or nested operator chains that may emit literal "item"/"current" tokens
 // not reachable by the AST-level rewrite.
 func (a *ArrayOperator) replaceElementRefsInSQL(sql string) string {
-	sql = itemWordBoundary.ReplaceAllString(sql, ElemVar)
-	sql = currentWordBoundary.ReplaceAllString(sql, ElemVar)
+	sql = itemPattern.ReplaceAllString(sql, "${1}"+ElemVar)
+	sql = currentPattern.ReplaceAllString(sql, "${1}"+ElemVar)
 	return sql
 }
 
@@ -760,8 +769,8 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 	case ProcessedValue:
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		if e.IsSQL {
-			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
-			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
+			replaced := itemPattern.ReplaceAllString(e.Value, "${1}"+ElemVar)
+			replaced = currentPattern.ReplaceAllString(replaced, "${1}"+ElemVar)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -842,9 +851,9 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		// for item, current, AND accumulator
 		if e.IsSQL {
-			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
-			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
-			replaced = accumulatorWordBoundary.ReplaceAllLiteralString(replaced, initialSQL)
+			replaced := itemPattern.ReplaceAllString(e.Value, "${1}"+ElemVar)
+			replaced = currentPattern.ReplaceAllString(replaced, "${1}"+ElemVar)
+			replaced = accumulatorPattern.ReplaceAllString(replaced, "${1}"+regexp.QuoteMeta(initialSQL))
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
