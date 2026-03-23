@@ -4,7 +4,7 @@ This guide covers development setup, testing, and contribution guidelines for js
 
 ## Prerequisites
 
-- Go 1.19 or later
+- Go 1.25 or later
 - Make (optional, for using Makefile)
 
 ## Quick Start
