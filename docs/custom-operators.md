@@ -2,6 +2,25 @@
 
 You can extend jsonlogic2sql with custom operators to support additional SQL functions like `LENGTH`, `UPPER`, `LOWER`, etc.
 
+## Naming Rules
+
+Operator names are validated on registration. A valid name must:
+
+- Not be empty or whitespace-only
+- Match the pattern `!?[a-zA-Z_][a-zA-Z0-9_]*` - start with a letter or underscore (with an optional `!` prefix for negation operators), followed by letters, digits, or underscores
+- Not conflict with a built-in operator name (e.g., `var`, `and`, `in`, `+`)
+
+Valid examples: `length`, `toLower`, `my_op`, `_private`, `!contains`, `!startsWith`
+
+Invalid examples: `""`, `" "`, `1op`, `my-op`, `my op`, `op.name`
+
+```go
+// These will return an error:
+transpiler.RegisterOperatorFunc("", handler)       // empty name
+transpiler.RegisterOperatorFunc("my-op", handler)  // invalid character '-'
+transpiler.RegisterOperatorFunc("and", handler)    // built-in operator
+```
+
 ## Using a Function
 
 The simplest way to register a custom operator:
