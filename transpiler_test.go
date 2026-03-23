@@ -683,7 +683,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "deeply nested reduce filter",
 			input:    `{"reduce": [{"filter": [{"var": "data"}, {"and": [{"some": [{"var": "tags"}, {"==": [{"var": "elem"}, "important"]}]}, {">": [{"var": "value"}, 0]}]}]}, {"+": [{"var": "accumulator"}, {"reduce": [{"var": "current.subitems"}, {"+": [{"var": "acc"}, {"var": "item"}]}, 0]}]}, 0]}`,
-			expected: "WHERE (SELECT (0 + (SELECT (acc + elem) FROM UNNEST(elem.subelems) AS elem)) FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE (EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE elem = 'important') AND value > 0))) AS elem)",
+			expected: "WHERE (SELECT (0 + (SELECT (acc + elem) FROM UNNEST(elem.subitems) AS elem)) FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE (EXISTS (SELECT 1 FROM UNNEST(tags) AS elem WHERE elem = 'important') AND value > 0))) AS elem)",
 			hasError: false,
 		},
 		{
@@ -749,7 +749,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "very deeply nested",
 			input:    `{"and": [{"some": [{"filter": [{"var": "data"}, {">": [{"var": "value"}, 0]}]}, {"all": [{"var": "elem.items"}, {">=": [{"var": "elem.score"}, 50]}]}]}, {">": [{"reduce": [{"var": "totals"}, {"+": [{"var": "accumulator"}, {"*": [{"var": "current"}, {"if": [{">": [{"var": "current"}, 100]}, 2, 1]}]}]}, 0]}, 1000]}]}`,
-			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE value > 0)) AS elem WHERE (ARRAY_LENGTH(elem.elems) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(elem.elems) AS elem WHERE NOT (elem.score >= 50)))) AND (SELECT (0 + (elem * CASE WHEN elem > 100 THEN 2 ELSE 1 END)) FROM UNNEST(totals) AS elem) > 1000)",
+			expected: "WHERE (EXISTS (SELECT 1 FROM UNNEST(ARRAY(SELECT elem FROM UNNEST(data) AS elem WHERE value > 0)) AS elem WHERE (ARRAY_LENGTH(elem.items) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(elem.items) AS elem WHERE NOT (elem.score >= 50)))) AND (SELECT (0 + (elem * CASE WHEN elem > 100 THEN 2 ELSE 1 END)) FROM UNNEST(totals) AS elem) > 1000)",
 			hasError: false,
 		},
 		{
