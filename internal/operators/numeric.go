@@ -312,11 +312,14 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 	// otherwise treat as a safely-quoted literal to prevent SQL injection.
 	// Pre-processed SQL from the parser arrives as ProcessedValue (handled above),
 	// so any plain string here is a raw JSON literal.
+	// Trim whitespace before numeric checks to match JSONLogic's JS coercion
+	// (e.g. " 3 " → 3), but quote the original if it's non-numeric.
 	if str, ok := value.(string); ok {
-		if isIntegerLiteral(str) {
-			return str, nil
+		trimmed := strings.TrimSpace(str)
+		if isIntegerLiteral(trimmed) {
+			return trimmed, nil
 		}
-		if num, err := strconv.ParseFloat(str, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
+		if num, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
 			return strconv.FormatFloat(num, 'f', -1, 64), nil
 		}
 		return n.dataOp.valueToSQL(str)

@@ -624,6 +624,30 @@ func TestNumericOperator_valueToSQL_ProcessedValue(t *testing.T) {
 			expected: "+42",
 			hasError: false,
 		},
+		{
+			name:     "whitespace-padded integer trimmed",
+			input:    " 3 ",
+			expected: "3",
+			hasError: false,
+		},
+		{
+			name:     "whitespace-padded float trimmed",
+			input:    " 3.14 ",
+			expected: "3.14",
+			hasError: false,
+		},
+		{
+			name:     "tab-padded integer trimmed",
+			input:    "\t5\t",
+			expected: "5",
+			hasError: false,
+		},
+		{
+			name:     "whitespace-only string quoted",
+			input:    "   ",
+			expected: "'   '",
+			hasError: false,
+		},
 	}
 
 	for _, tt := range tests {
