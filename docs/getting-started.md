@@ -10,7 +10,7 @@ go get github.com/h22rana/jsonlogic2sql@latest
 
 ## Prerequisites
 
-- Go 1.19 or later
+- Go 1.25 or later
 
 ## Basic Usage
 

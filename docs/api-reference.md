@@ -221,16 +221,16 @@ type FieldSchema struct {
 Field type constants.
 
 ```go
-type FieldType int
+type FieldType string
 
 const (
-    FieldTypeString   FieldType // String field type
-    FieldTypeInteger  FieldType // Integer field type
-    FieldTypeNumber   FieldType // Numeric field type (float/decimal)
-    FieldTypeBoolean  FieldType // Boolean field type
-    FieldTypeArray    FieldType // Array field type
-    FieldTypeObject   FieldType // Object/struct field type
-    FieldTypeEnum     FieldType // Enum field type (requires AllowedValues)
+    FieldTypeString  FieldType = "string"  // String field type
+    FieldTypeInteger FieldType = "integer" // Integer field type
+    FieldTypeNumber  FieldType = "number"  // Numeric field type (float/decimal)
+    FieldTypeBoolean FieldType = "boolean" // Boolean field type
+    FieldTypeArray   FieldType = "array"   // Array field type
+    FieldTypeObject  FieldType = "object"  // Object/struct field type
+    FieldTypeEnum    FieldType = "enum"    // Enum field type (requires AllowedValues)
 )
 ```
 
