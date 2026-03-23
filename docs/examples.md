@@ -336,6 +336,32 @@ WHERE -value
 WHERE CAST(-5 AS NUMERIC)
 ```
 
+### String Operands (Numeric Coercion)
+
+String literals in arithmetic are coerced to numbers when valid, or safely quoted otherwise:
+
+```json
+{"+": ["42", 1]}
+{"*": [" 3 ", 2]}
+{"+": ["3.14", 1]}
+{"+": ["hello", 1]}
+```
+```sql
+WHERE (42 + 1)
+WHERE (3 * 2)
+WHERE (3.14 + 1)
+WHERE ('hello' + 1)
+```
+
+Large integers are preserved without precision loss:
+
+```json
+{"+": ["9223372036854775808", 1]}
+```
+```sql
+WHERE (9223372036854775808 + 1)
+```
+
 ## Array Operations
 
 ### In Array

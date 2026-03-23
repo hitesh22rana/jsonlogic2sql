@@ -76,7 +76,7 @@ func main() {
 
 > **Semantic Correctness Assumption:** This library assumes that the input JSONLogic is semantically correct. The transpiler generates SQL that directly corresponds to the JSONLogic structure without validating the logical correctness of the expressions.
 
-> **SQL Injection:** This library does NOT handle SQL injection prevention. The caller is responsible for validating input and using parameterized queries where appropriate.
+> **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. However, the caller should still validate input and use parameterized queries where appropriate for defense in depth.
 
 ## Interactive REPL
 
