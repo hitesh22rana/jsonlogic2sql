@@ -305,8 +305,12 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 			initial, pattern.function, elemRef, array), nil
 	}
 
-	// General case: rewrite element and accumulator vars in the AST, then generate SQL
-	rewritten := a.rewriteReduceVars(reducerExpr, initial)
+	// General case: rewrite element vars in the AST (item/current → elem),
+	// then generate SQL, apply safety net for custom ops, and finally
+	// substitute accumulator with the initial value. The order matters:
+	// accumulator substitution must happen LAST so that the safety net
+	// doesn't corrupt initial values containing "current"/"item" field names.
+	rewritten := a.rewriteElementVars(reducerExpr)
 	reducerWithElem, err := a.expressionToSQL(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
@@ -849,104 +853,6 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 		result := make([]interface{}, len(e))
 		for i, v := range e {
 			result[i] = a.rewriteElementVars(v)
-		}
-		return result
-
-	default:
-		return expr
-	}
-}
-
-// rewriteReduceVars walks the JSONLogic AST and rewrites both element variable
-// references and accumulator references for the reduce operator. Like
-// rewriteElementVars, it respects nested array operator scope boundaries.
-func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) interface{} {
-	switch e := expr.(type) {
-	case ProcessedValue:
-		// Pre-processed SQL from custom operators - use word-boundary regex
-		// for item, current, AND accumulator
-		if e.IsSQL {
-			replaced := replaceWithLiteral(itemPattern, e.Value, ElemVar)
-			replaced = replaceWithLiteral(currentPattern, replaced, ElemVar)
-			replaced = replaceWithLiteral(accumulatorPattern, replaced, initialSQL)
-			if replaced != e.Value {
-				return ProcessedValue{Value: replaced, IsSQL: true}
-			}
-		}
-		return e
-	case map[string]interface{}:
-		if len(e) == 1 {
-			// Check for var expression
-			if varName, hasVar := e[OpVar]; hasVar {
-				if varStr, ok := varName.(string); ok {
-					// Map element refs (item, current, "")
-					mapped := a.mapElementVarName(varStr)
-					if mapped != varStr {
-						return map[string]interface{}{OpVar: mapped}
-					}
-					// Map accumulator (exact or dot-prefix)
-					if varStr == AccumulatorVar {
-						return ProcessedValue{Value: initialSQL, IsSQL: true}
-					}
-					if strings.HasPrefix(varStr, AccumulatorVar+".") {
-						suffix := varStr[len(AccumulatorVar):]
-						return ProcessedValue{Value: initialSQL + suffix, IsSQL: true}
-					}
-				}
-				// Handle array-form var: {"var": ["current", defaultValue]} or {"var": ["accumulator", defaultValue]}
-				if varArr, ok := varName.([]interface{}); ok && len(varArr) > 0 {
-					if varStr, ok := varArr[0].(string); ok {
-						mapped := a.mapElementVarName(varStr)
-						if mapped != varStr {
-							newArr := make([]interface{}, len(varArr))
-							copy(newArr, varArr)
-							newArr[0] = mapped
-							return map[string]interface{}{OpVar: newArr}
-						}
-						if varStr == AccumulatorVar {
-							newArr := make([]interface{}, len(varArr))
-							copy(newArr, varArr)
-							newArr[0] = initialSQL
-							return map[string]interface{}{OpVar: newArr}
-						}
-					}
-				}
-				return e
-			}
-			// Check for nested array operator - don't rewrite its lambda body
-			for opName, opArgs := range e {
-				if a.isArrayOperator(opName) {
-					if arr, ok := opArgs.([]interface{}); ok {
-						newArgs := make([]interface{}, len(arr))
-						copy(newArgs, arr)
-						// Rewrite args[0] (array source - outer scope)
-						if len(newArgs) > 0 {
-							newArgs[0] = a.rewriteReduceVars(arr[0], initialSQL)
-						}
-						// For reduce, also rewrite args[2] (initial value - outer scope)
-						if opName == OpReduce && len(newArgs) > 2 {
-							newArgs[2] = a.rewriteReduceVars(arr[2], initialSQL)
-						}
-						return map[string]interface{}{opName: newArgs}
-					}
-				}
-			}
-			// Regular single-key operator - recursively rewrite values
-			for opName, opArgs := range e {
-				return map[string]interface{}{opName: a.rewriteReduceVars(opArgs, initialSQL)}
-			}
-		}
-		// Multi-key map - recursively rewrite all values
-		result := make(map[string]interface{}, len(e))
-		for k, v := range e {
-			result[k] = a.rewriteReduceVars(v, initialSQL)
-		}
-		return result
-
-	case []interface{}:
-		result := make([]interface{}, len(e))
-		for i, v := range e {
-			result[i] = a.rewriteReduceVars(v, initialSQL)
 		}
 		return result
 
