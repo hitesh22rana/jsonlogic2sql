@@ -319,7 +319,7 @@ WHERE (length(ages) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(ages) AS elem WHERE
 WHERE (length(ages) > 0 AND arrayAll(elem -> elem >= 18, ages))
 ```
 
-> **Note:** The array length guard ensures JSONLogic spec compliance — `{"all": [[], condition]}` returns `false` (not `true`). Each dialect uses its native array length function: `ARRAY_LENGTH` (BigQuery/Spanner), `CARDINALITY` (PostgreSQL), `length` (DuckDB/ClickHouse).
+> **Note:** The array length guard ensures JSONLogic spec compliance - `{"all": [[], condition]}` returns `false` (not `true`). Each dialect uses its native array length function: `ARRAY_LENGTH` (BigQuery/Spanner), `CARDINALITY` (PostgreSQL), `length` (DuckDB/ClickHouse).
 
 ### Some Elements Satisfy Condition
 

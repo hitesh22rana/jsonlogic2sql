@@ -780,9 +780,13 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 					if arr, ok := opArgs.([]interface{}); ok {
 						newArgs := make([]interface{}, len(arr))
 						copy(newArgs, arr)
-						// Only rewrite args[0] (array source - outer scope)
+						// Rewrite args[0] (array source - outer scope)
 						if len(newArgs) > 0 {
 							newArgs[0] = a.rewriteElementVars(arr[0])
+						}
+						// For reduce, also rewrite args[2] (initial value - outer scope)
+						if opName == OpReduce && len(newArgs) > 2 {
+							newArgs[2] = a.rewriteElementVars(arr[2])
 						}
 						return map[string]interface{}{opName: newArgs}
 					}
@@ -823,7 +827,7 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 		if e.IsSQL {
 			replaced := itemWordBoundary.ReplaceAllString(e.Value, ElemVar)
 			replaced = currentWordBoundary.ReplaceAllString(replaced, ElemVar)
-			replaced = accumulatorWordBoundary.ReplaceAllString(replaced, initialSQL)
+			replaced = accumulatorWordBoundary.ReplaceAllLiteralString(replaced, initialSQL)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -874,9 +878,13 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 					if arr, ok := opArgs.([]interface{}); ok {
 						newArgs := make([]interface{}, len(arr))
 						copy(newArgs, arr)
-						// Only rewrite args[0] (array source - outer scope)
+						// Rewrite args[0] (array source - outer scope)
 						if len(newArgs) > 0 {
 							newArgs[0] = a.rewriteReduceVars(arr[0], initialSQL)
+						}
+						// For reduce, also rewrite args[2] (initial value - outer scope)
+						if opName == OpReduce && len(newArgs) > 2 {
+							newArgs[2] = a.rewriteReduceVars(arr[2], initialSQL)
 						}
 						return map[string]interface{}{opName: newArgs}
 					}
