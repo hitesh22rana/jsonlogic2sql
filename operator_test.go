@@ -157,9 +157,36 @@ func TestOperatorRegistry(t *testing.T) {
 }
 
 func TestValidateOperatorName(t *testing.T) {
-	t.Run("valid custom name", func(t *testing.T) {
-		if err := validateOperatorName("length"); err != nil {
-			t.Errorf("unexpected error for valid name: %v", err)
+	t.Run("valid custom names", func(t *testing.T) {
+		valid := []string{"length", "toLower", "my_op", "_private", "Op2", "a", "!contains", "!startsWith"}
+		for _, name := range valid {
+			if err := validateOperatorName(name); err != nil {
+				t.Errorf("unexpected error for valid name %q: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("empty name", func(t *testing.T) {
+		if err := validateOperatorName(""); err == nil {
+			t.Error("expected error for empty name")
+		}
+	})
+
+	t.Run("whitespace-only names", func(t *testing.T) {
+		names := []string{" ", "  ", "\t", "\n", " \t\n "}
+		for _, name := range names {
+			if err := validateOperatorName(name); err == nil {
+				t.Errorf("expected error for whitespace-only name %q", name)
+			}
+		}
+	})
+
+	t.Run("invalid format names", func(t *testing.T) {
+		invalid := []string{"1op", "my-op", "my op", "op!", "op.name", "op/name", "op+1"}
+		for _, name := range invalid {
+			if err := validateOperatorName(name); err == nil {
+				t.Errorf("expected error for invalid name %q", name)
+			}
 		}
 	})
 

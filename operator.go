@@ -3,6 +3,8 @@ package jsonlogic2sql
 import (
 	"fmt"
 	"maps"
+	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -234,9 +236,21 @@ func (r *OperatorRegistry) Merge(other *OperatorRegistry) {
 	maps.Copy(r.handlers, other.handlers)
 }
 
+var validOperatorNameRe = regexp.MustCompile(`^!?[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 // validateOperatorName checks if an operator name is valid.
-// Returns an error if the name conflicts with built-in operators.
+// Names must be non-empty, match ^!?[a-zA-Z_][a-zA-Z0-9_]*$ (optional !
+// prefix for negation operators like !contains), and not conflict with
+// built-in operators.
 func validateOperatorName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("operator name must not be empty")
+	}
+	if !validOperatorNameRe.MatchString(trimmed) {
+		return fmt.Errorf("operator name %q must match pattern !?[a-zA-Z_][a-zA-Z0-9_]*", name)
+	}
+
 	builtInOperators := map[string]bool{
 		// Data access
 		"var": true, "missing": true, "missing_some": true,
