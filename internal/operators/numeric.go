@@ -2,6 +2,8 @@ package operators
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -306,10 +308,21 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 		return n.dataOp.valueToSQL(pv.Value)
 	}
 
-	// Handle pre-processed SQL strings from the parser
-	if sqlStr, ok := value.(string); ok {
-		// This is a pre-processed SQL string from the parser
-		return sqlStr, nil
+	// Handle plain strings: attempt numeric coercion per JSONLogic spec,
+	// otherwise treat as a safely-quoted literal to prevent SQL injection.
+	// Pre-processed SQL from the parser arrives as ProcessedValue (handled above),
+	// so any plain string here is a raw JSON literal.
+	// Trim whitespace before numeric checks to match JSONLogic's JS coercion
+	// (e.g. " 3 " → 3), but quote the original if it's non-numeric.
+	if str, ok := value.(string); ok {
+		trimmed := strings.TrimSpace(str)
+		if isIntegerLiteral(trimmed) {
+			return trimmed, nil
+		}
+		if num, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
+			return strconv.FormatFloat(num, 'f', -1, 64), nil
+		}
+		return n.dataOp.valueToSQL(str)
 	}
 
 	// Handle var expressions and complex expressions
@@ -381,17 +394,30 @@ func (n *NumericOperator) processComplexArgs(args []interface{}) ([]string, erro
 	return processed, nil
 }
 
-// processComplexArgsForComparison processes arguments for comparison operators
-// Returns []interface{} instead of []string to match comparison operator's expectations.
+// processComplexArgsForComparison processes arguments for comparison operators.
+// Var expressions and primitives are passed through so the comparison operator
+// can perform schema-based type coercion (e.g. number→string for string fields).
+// Only nested complex expressions (arithmetic, logical, etc.) are pre-evaluated
+// to SQL and wrapped in SQLResult.
 func (n *NumericOperator) processComplexArgsForComparison(args []interface{}) ([]interface{}, error) {
 	processed := make([]interface{}, len(args))
 
 	for i, arg := range args {
-		sql, err := n.valueToSQL(arg)
-		if err != nil {
-			return nil, err
+		if exprMap, ok := arg.(map[string]interface{}); ok && len(exprMap) == 1 {
+			if _, isVar := exprMap[OpVar]; isVar {
+				processed[i] = arg
+				continue
+			}
+			sql, err := n.valueToSQL(arg)
+			if err != nil {
+				return nil, err
+			}
+			processed[i] = SQLResult(sql)
+			continue
 		}
-		processed[i] = sql
+		// Primitives (string, float64, bool, nil) and ProcessedValue pass through
+		// so comparison can apply schema coercion and proper quoting.
+		processed[i] = arg
 	}
 
 	return processed, nil
@@ -444,4 +470,26 @@ func (n *NumericOperator) generateComplexSQL(operator string, args []string) (st
 		// If we see them here, it means they weren't processed correctly
 		return "", fmt.Errorf("unsupported operator in numeric expression: %s", operator)
 	}
+}
+
+// isIntegerLiteral reports whether s matches ^[+-]?[0-9]+$ - a bare integer
+// with an optional sign and no decimal point, exponent, or other characters.
+// Validated strings are safe to emit directly as SQL numeric literals.
+func isIntegerLiteral(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	start := 0
+	if s[0] == '+' || s[0] == '-' {
+		start = 1
+	}
+	if start >= len(s) {
+		return false
+	}
+	for i := start; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

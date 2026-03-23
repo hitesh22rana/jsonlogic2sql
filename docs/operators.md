@@ -231,6 +231,27 @@ WHERE (total / 2)
 WHERE (count % 3)
 ```
 
+### String Operands in Arithmetic
+
+When string literals appear in numeric operations, the transpiler coerces them following JSONLogic's JavaScript-like semantics:
+
+- **Valid numeric strings** are coerced to numbers: `"42"` becomes `42`, `"3.14"` becomes `3.14`
+- **Whitespace-padded numeric strings** are trimmed then coerced: `" 3 "` becomes `3`
+- **Non-numeric strings** are safely quoted as string literals: `"hello"` becomes `'hello'`
+- **Special float values** (`"NaN"`, `"Inf"`) are safely quoted: `"NaN"` becomes `'NaN'`
+- **Large integers** are preserved exactly without float64 precision loss: `"9223372036854775808"` stays `9223372036854775808`
+
+```json
+{"+": ["42", 1]}
+{"*": [" 3 ", 2]}
+{"+": ["hello", 1]}
+```
+```sql
+WHERE (42 + 1)
+WHERE (3 * 2)
+WHERE ('hello' + 1)
+```
+
 ### Unary Operations
 
 ```json

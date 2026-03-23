@@ -158,7 +158,16 @@ fmt.Println(sql)
 // Without schema: WHERE amount >= '50000'
 ```
 
-Coercion applies to all comparison operators (`==`, `!=`, `>`, `>=`, `<`, `<=`), the `in` operator with array literals, and string containment checks.
+Coercion applies to all comparison operators (`==`, `!=`, `>`, `>=`, `<`, `<=`), the `in` operator with array literals, and string containment checks. Schema coercion also applies to comparisons nested within numeric expressions (e.g., `{"+": [{"==": [{"var": "status"}, 123]}, 0]}` correctly coerces `123` to `'123'` for a string field).
+
+**Numeric String Coercion** - In numeric operations (`+`, `-`, `*`, `/`, `%`), string operands are coerced per JSONLogic's JavaScript-like semantics. Valid numeric strings are converted to numbers, whitespace is trimmed, and non-numeric strings are safely quoted:
+
+```go
+sql, _ := transpiler.Transpile(`{"+": ["42", 1]}`)
+fmt.Println(sql)
+// Output: WHERE (42 + 1)
+// "42" coerced to number; "hello" would become 'hello'
+```
 
 ## Schema-Aware Truthiness
 
