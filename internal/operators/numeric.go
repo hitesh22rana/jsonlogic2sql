@@ -472,7 +472,7 @@ func (n *NumericOperator) generateComplexSQL(operator string, args []string) (st
 	}
 }
 
-// isIntegerLiteral reports whether s matches ^[+-]?[0-9]+$ — a bare integer
+// isIntegerLiteral reports whether s matches ^[+-]?[0-9]+$ - a bare integer
 // with an optional sign and no decimal point, exponent, or other characters.
 // Validated strings are safe to emit directly as SQL numeric literals.
 func isIntegerLiteral(s string) bool {
