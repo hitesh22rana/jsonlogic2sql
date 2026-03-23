@@ -312,7 +312,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
 	reducerWithElem = a.replaceElementRefsInSQL(reducerWithElem)
-	reducerWithElem = accumulatorPattern.ReplaceAllString(reducerWithElem, "${1}"+regexp.QuoteMeta(initial))
+	reducerWithElem = replaceWithLiteral(accumulatorPattern, reducerWithElem, initial)
 
 	// Generate SQL based on dialect
 	switch a.getDialect() {
@@ -720,9 +720,24 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 // operators or nested operator chains that may emit literal "item"/"current" tokens
 // not reachable by the AST-level rewrite.
 func (a *ArrayOperator) replaceElementRefsInSQL(sql string) string {
-	sql = itemPattern.ReplaceAllString(sql, "${1}"+ElemVar)
-	sql = currentPattern.ReplaceAllString(sql, "${1}"+ElemVar)
+	sql = replaceWithLiteral(itemPattern, sql, ElemVar)
+	sql = replaceWithLiteral(currentPattern, sql, ElemVar)
 	return sql
+}
+
+// replaceWithLiteral replaces regex matches while preserving the captured prefix
+// and treating the replacement as a literal string (no $-expansion).
+func replaceWithLiteral(re *regexp.Regexp, s, replacement string) string {
+	return re.ReplaceAllStringFunc(s, func(match string) string {
+		// The match includes the captured prefix character (or empty at start-of-string).
+		// Find where the keyword starts by checking the prefix.
+		loc := re.FindStringSubmatchIndex(match)
+		if loc == nil {
+			return match
+		}
+		prefix := match[loc[2]:loc[3]]
+		return prefix + replacement
+	})
 }
 
 // mapElementVarName maps JSONLogic element variable names to the SQL UNNEST alias.
@@ -769,8 +784,8 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 	case ProcessedValue:
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		if e.IsSQL {
-			replaced := itemPattern.ReplaceAllString(e.Value, "${1}"+ElemVar)
-			replaced = currentPattern.ReplaceAllString(replaced, "${1}"+ElemVar)
+			replaced := replaceWithLiteral(itemPattern, e.Value, ElemVar)
+			replaced = replaceWithLiteral(currentPattern, replaced, ElemVar)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -851,9 +866,9 @@ func (a *ArrayOperator) rewriteReduceVars(expr interface{}, initialSQL string) i
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		// for item, current, AND accumulator
 		if e.IsSQL {
-			replaced := itemPattern.ReplaceAllString(e.Value, "${1}"+ElemVar)
-			replaced = currentPattern.ReplaceAllString(replaced, "${1}"+ElemVar)
-			replaced = accumulatorPattern.ReplaceAllString(replaced, "${1}"+regexp.QuoteMeta(initialSQL))
+			replaced := replaceWithLiteral(itemPattern, e.Value, ElemVar)
+			replaced = replaceWithLiteral(currentPattern, replaced, ElemVar)
+			replaced = replaceWithLiteral(accumulatorPattern, replaced, initialSQL)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
