@@ -242,7 +242,7 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 // When no schema is configured, validates that the name matches a safe SQL identifier
 // pattern to prevent injection via malicious var names.
 func (d *DataOperator) convertVarName(varName string) (string, error) {
-	// When schema is set, it already validates field names — no extra check needed.
+	// When schema is set, it already validates field names - no extra check needed.
 	// When no schema, enforce identifier pattern as a safety net.
 	if d.schema() == nil {
 		if !validIdentifier.MatchString(varName) {
