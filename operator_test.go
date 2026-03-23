@@ -182,7 +182,7 @@ func TestValidateOperatorName(t *testing.T) {
 	})
 
 	t.Run("invalid format names", func(t *testing.T) {
-		invalid := []string{"1op", "my-op", "my op", "op!", "op.name", "op/name", "op+1"}
+		invalid := []string{"1op", "my-op", "my op", "op!", "op.name", "op/name", "op+1", " length", "length ", " length "}
 		for _, name := range invalid {
 			if err := validateOperatorName(name); err == nil {
 				t.Errorf("expected error for invalid name %q", name)

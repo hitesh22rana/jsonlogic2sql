@@ -243,11 +243,10 @@ var validOperatorNameRe = regexp.MustCompile(`^!?[a-zA-Z_][a-zA-Z0-9_]*$`)
 // prefix for negation operators like !contains), and not conflict with
 // built-in operators.
 func validateOperatorName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
+	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("operator name must not be empty")
 	}
-	if !validOperatorNameRe.MatchString(trimmed) {
+	if !validOperatorNameRe.MatchString(name) {
 		return fmt.Errorf("operator name %q must match pattern !?[a-zA-Z_][a-zA-Z0-9_]*", name)
 	}
 
