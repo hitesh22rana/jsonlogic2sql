@@ -1,7 +1,6 @@
 package operators
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -536,9 +535,69 @@ func TestNumericOperator_valueToSQL_ProcessedValue(t *testing.T) {
 			hasError: false,
 		},
 		{
-			name:     "string value passed through as SQL",
+			name:     "plain string safely quoted (not passed through as SQL)",
 			input:    "pre_processed_sql",
-			expected: "pre_processed_sql",
+			expected: "'pre_processed_sql'",
+			hasError: false,
+		},
+		{
+			name:     "numeric string coerced to integer",
+			input:    "42",
+			expected: "42",
+			hasError: false,
+		},
+		{
+			name:     "numeric string coerced to float",
+			input:    "3.14",
+			expected: "3.14",
+			hasError: false,
+		},
+		{
+			name:     "negative numeric string coerced",
+			input:    "-7",
+			expected: "-7",
+			hasError: false,
+		},
+		{
+			name:     "injection attempt safely quoted",
+			input:    "1 OR 1=1",
+			expected: "'1 OR 1=1'",
+			hasError: false,
+		},
+		{
+			name:     "SQL injection with semicolon safely quoted",
+			input:    "1; DROP TABLE users",
+			expected: "'1; DROP TABLE users'",
+			hasError: false,
+		},
+		{
+			name:     "single quote in string properly escaped",
+			input:    "it's",
+			expected: "'it''s'",
+			hasError: false,
+		},
+		{
+			name:     "NaN safely quoted",
+			input:    "NaN",
+			expected: "'NaN'",
+			hasError: false,
+		},
+		{
+			name:     "+Inf safely quoted",
+			input:    "+Inf",
+			expected: "'+Inf'",
+			hasError: false,
+		},
+		{
+			name:     "-Inf safely quoted",
+			input:    "-Inf",
+			expected: "'-Inf'",
+			hasError: false,
+		},
+		{
+			name:     "Inf safely quoted",
+			input:    "Inf",
+			expected: "'Inf'",
 			hasError: false,
 		},
 	}
@@ -708,16 +767,18 @@ func TestNumericOperator_generateComplexSQL(t *testing.T) {
 func TestNumericOperator_valueToSQL_NestedComparison(t *testing.T) {
 	op := NewNumericOperator(nil)
 
-	// Test nested comparison inside numeric valueToSQL
+	// processComplexArgsForComparison now wraps results in SQLResult,
+	// so the comparison operator sees them as pre-processed SQL:
+	// - {"var": "status"} resolves to "status" (column name, unquoted)
+	// - "active" resolves to "'active'" (literal, quoted by dataOp)
 	input := map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "status"}, "active"}}
 	result, err := op.valueToSQL(input)
 	if err != nil {
 		t.Errorf("valueToSQL() unexpected error = %v", err)
 	}
-	// The var resolves to "status" but processComplexArgsForComparison passes raw strings
-	// so comparison operator may quote the var result as a literal string
-	if result == "" {
-		t.Error("valueToSQL() returned empty string for nested comparison")
+	expected := "status = 'active'"
+	if result != expected {
+		t.Errorf("valueToSQL() = %v, want %v", result, expected)
 	}
 }
 
@@ -824,23 +885,81 @@ func TestNumericOperator_valueToSQL_ExpressionParserCallback(t *testing.T) {
 func TestNumericOperator_processComplexArgsForComparison(t *testing.T) {
 	op := NewNumericOperator(nil)
 
-	args := []interface{}{
-		map[string]interface{}{"var": "amount"},
-		42,
-	}
-	result, err := op.processComplexArgsForComparison(args)
-	if err != nil {
-		t.Errorf("processComplexArgsForComparison() unexpected error = %v", err)
-	}
-	if len(result) != 2 {
-		t.Fatalf("processComplexArgsForComparison() returned %d args, want 2", len(result))
-	}
-	if fmt.Sprintf("%v", result[0]) != "amount" {
-		t.Errorf("processComplexArgsForComparison()[0] = %v, want amount", result[0])
-	}
-	if fmt.Sprintf("%v", result[1]) != "42" {
-		t.Errorf("processComplexArgsForComparison()[1] = %v, want 42", result[1])
-	}
+	t.Run("var and primitive pass through", func(t *testing.T) {
+		args := []interface{}{
+			map[string]interface{}{"var": "amount"},
+			42,
+		}
+		result, err := op.processComplexArgsForComparison(args)
+		if err != nil {
+			t.Fatalf("unexpected error = %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("returned %d args, want 2", len(result))
+		}
+
+		// Var expression passes through as-is for schema coercion
+		varMap, ok := result[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("[0] is %T, want map[string]interface{}", result[0])
+		}
+		if _, hasVar := varMap["var"]; !hasVar {
+			t.Errorf("[0] has no 'var' key")
+		}
+
+		// Primitive passes through as-is
+		num, ok := result[1].(int)
+		if !ok {
+			t.Fatalf("[1] is %T, want int", result[1])
+		}
+		if num != 42 {
+			t.Errorf("[1] = %v, want 42", num)
+		}
+	})
+
+	t.Run("nested expression wrapped in SQLResult", func(t *testing.T) {
+		args := []interface{}{
+			map[string]interface{}{"+": []interface{}{
+				map[string]interface{}{"var": "x"}, float64(1),
+			}},
+			float64(10),
+		}
+		result, err := op.processComplexArgsForComparison(args)
+		if err != nil {
+			t.Fatalf("unexpected error = %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("returned %d args, want 2", len(result))
+		}
+
+		// Nested arithmetic → pre-processed as SQLResult
+		pv, ok := result[0].(ProcessedValue)
+		if !ok {
+			t.Fatalf("[0] is %T, want ProcessedValue", result[0])
+		}
+		if !pv.IsSQL || pv.Value != "(x + 1)" {
+			t.Errorf("[0] = %+v, want SQLResult('(x + 1)')", pv)
+		}
+
+		// Primitive passes through
+		if result[1] != float64(10) {
+			t.Errorf("[1] = %v, want 10", result[1])
+		}
+	})
+
+	t.Run("string literal passes through", func(t *testing.T) {
+		args := []interface{}{
+			map[string]interface{}{"var": "status"},
+			"active",
+		}
+		result, err := op.processComplexArgsForComparison(args)
+		if err != nil {
+			t.Fatalf("unexpected error = %v", err)
+		}
+		if result[1] != "active" {
+			t.Errorf("[1] = %v, want 'active'", result[1])
+		}
+	})
 }
 
 func TestNumericOperator_extractFieldName(t *testing.T) {

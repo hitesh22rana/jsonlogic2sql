@@ -695,7 +695,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "nested comparison in numeric",
 			input:    `{"+": [{">": [{"var": "a"}, 5]}, {"<": [{"var": "b"}, 10]}]}`,
-			expected: "WHERE ('a' > '5' + 'b' < '10')",
+			expected: "WHERE (a > 5 + b < 10)",
 			hasError: false,
 		},
 		{
@@ -1883,6 +1883,125 @@ func TestPackageLevel_TranspileConditionFromInterface(t *testing.T) {
 				if result != tt.expected {
 					t.Errorf("TranspileConditionFromInterface() = %q, want %q", result, tt.expected)
 				}
+			}
+		})
+	}
+}
+
+func TestNestedComparisonSchemaCoercion(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "status", Type: FieldTypeString},
+		{Name: "amount", Type: FieldTypeInteger},
+	})
+	config := &TranspilerConfig{Dialect: DialectBigQuery, Schema: schema}
+	tr, err := NewTranspilerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "baseline: number coerced to string for string field",
+			input:    `{"==": [{"var": "status"}, 123]}`,
+			expected: "WHERE status = '123'",
+		},
+		{
+			name:     "nested in numeric: coercion still applies",
+			input:    `{"+": [{"==": [{"var": "status"}, 123]}, 0]}`,
+			expected: "WHERE (status = '123' + 0)",
+		},
+		{
+			name:     "nested in if in numeric: coercion still applies",
+			input:    `{"+": [{"if": [{"==": [{"var": "status"}, 456]}, 1, 0]}, 0]}`,
+			expected: "WHERE (CASE WHEN status = '456' THEN 1 ELSE 0 END + 0)",
+		},
+		{
+			name:     "nested: string coerced to number for integer field",
+			input:    `{"+": [{">": [{"var": "amount"}, "50"]}, 0]}`,
+			expected: "WHERE (amount > 50 + 0)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tr.Transpile(tt.input)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Transpile() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNumericStringInjectionPrevention(t *testing.T) {
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "multiplication with injection string",
+			input:    `{"*": ["1 OR 1=1", 2]}`,
+			expected: "WHERE ('1 OR 1=1' * 2)",
+		},
+		{
+			name:     "addition with injection string",
+			input:    `{"+": ["1; DROP TABLE users", 2]}`,
+			expected: "WHERE ('1; DROP TABLE users' + 2)",
+		},
+		{
+			name:     "numeric string coerced correctly",
+			input:    `{"*": ["3", 4]}`,
+			expected: "WHERE (3 * 4)",
+		},
+		{
+			name:     "float string coerced correctly",
+			input:    `{"+": ["1.5", 2]}`,
+			expected: "WHERE (1.5 + 2)",
+		},
+		{
+			name:     "non-numeric string safely quoted",
+			input:    `{"+": ["hello", 1]}`,
+			expected: "WHERE ('hello' + 1)",
+		},
+		{
+			name:     "single quotes escaped in string",
+			input:    `{"*": ["it's dangerous", 1]}`,
+			expected: "WHERE ('it''s dangerous' * 1)",
+		},
+		{
+			name:     "nested comparison in numeric preserves column names",
+			input:    `{"+": [{"if": [{"==": [{"var": "status"}, "active"]}, 1, 0]}, 0]}`,
+			expected: "WHERE (CASE WHEN status = 'active' THEN 1 ELSE 0 END + 0)",
+		},
+	}
+
+	for _, d := range dialects {
+		t.Run(d.String(), func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					result, err := Transpile(d, tt.input)
+					if err != nil {
+						t.Fatalf("Transpile() error = %v", err)
+					}
+					if result != tt.expected {
+						t.Errorf("Transpile() = %q, want %q", result, tt.expected)
+					}
+				})
 			}
 		})
 	}
