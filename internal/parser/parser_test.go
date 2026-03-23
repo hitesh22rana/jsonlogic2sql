@@ -244,7 +244,7 @@ func TestParser_Parse(t *testing.T) {
 			input: map[string]interface{}{
 				"merge": []interface{}{[]interface{}{1, 2}, []interface{}{3, 4}},
 			},
-			expected: "WHERE ARRAY_CONCAT([1 2], [3 4])",
+			expected: "WHERE ARRAY_CONCAT([1, 2], [3, 4])",
 			hasError: false,
 		},
 		{

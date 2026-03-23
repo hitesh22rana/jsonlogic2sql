@@ -22,7 +22,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "map with array and expression",
 			operator: "map",
 			args:     []interface{}{[]interface{}{1, 2, 3}, map[string]interface{}{"+": []interface{}{map[string]interface{}{"var": "item"}, 1}}},
-			expected: "ARRAY(SELECT (elem + 1) FROM UNNEST([1 2 3]) AS elem)",
+			expected: "ARRAY(SELECT (elem + 1) FROM UNNEST([1, 2, 3]) AS elem)",
 			hasError: false,
 		},
 		{
@@ -45,7 +45,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "filter with array and condition",
 			operator: "filter",
 			args:     []interface{}{[]interface{}{1, 2, 3, 4, 5}, map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "item"}, 2}}},
-			expected: "ARRAY(SELECT elem FROM UNNEST([1 2 3 4 5]) AS elem WHERE elem > 2)",
+			expected: "ARRAY(SELECT elem FROM UNNEST([1, 2, 3, 4, 5]) AS elem WHERE elem > 2)",
 			hasError: false,
 		},
 		{
@@ -68,7 +68,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "reduce with array, initial, and expression (sum pattern)",
 			operator: "reduce",
 			args:     []interface{}{[]interface{}{1, 2, 3, 4}, map[string]interface{}{"+": []interface{}{map[string]interface{}{"var": "accumulator"}, map[string]interface{}{"var": "current"}}}, 0},
-			expected: "0 + COALESCE((SELECT SUM(elem) FROM UNNEST([1 2 3 4]) AS elem), 0)",
+			expected: "0 + COALESCE((SELECT SUM(elem) FROM UNNEST([1, 2, 3, 4]) AS elem), 0)",
 			hasError: false,
 		},
 		{
@@ -91,7 +91,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "all with array and condition",
 			operator: "all",
 			args:     []interface{}{[]interface{}{10, 20, 30}, map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "item"}, 5}}},
-			expected: "(ARRAY_LENGTH([10 20 30]) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST([10 20 30]) AS elem WHERE NOT (elem > 5)))",
+			expected: "(ARRAY_LENGTH([10, 20, 30]) > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST([10, 20, 30]) AS elem WHERE NOT (elem > 5)))",
 			hasError: false,
 		},
 		{
@@ -114,7 +114,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "some with array and condition",
 			operator: "some",
 			args:     []interface{}{[]interface{}{1, 2, 3, 4, 5}, map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "item"}, 3}}},
-			expected: "EXISTS (SELECT 1 FROM UNNEST([1 2 3 4 5]) AS elem WHERE elem = 3)",
+			expected: "EXISTS (SELECT 1 FROM UNNEST([1, 2, 3, 4, 5]) AS elem WHERE elem = 3)",
 			hasError: false,
 		},
 		{
@@ -137,7 +137,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "none with array and condition",
 			operator: "none",
 			args:     []interface{}{[]interface{}{1, 2, 3, 4, 5}, map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "item"}, 0}}},
-			expected: "NOT EXISTS (SELECT 1 FROM UNNEST([1 2 3 4 5]) AS elem WHERE elem < 0)",
+			expected: "NOT EXISTS (SELECT 1 FROM UNNEST([1, 2, 3, 4, 5]) AS elem WHERE elem < 0)",
 			hasError: false,
 		},
 		{
@@ -160,14 +160,14 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "merge with two arrays",
 			operator: "merge",
 			args:     []interface{}{[]interface{}{1, 2}, []interface{}{3, 4}},
-			expected: "ARRAY_CONCAT([1 2], [3 4])",
+			expected: "ARRAY_CONCAT([1, 2], [3, 4])",
 			hasError: false,
 		},
 		{
 			name:     "merge with three arrays",
 			operator: "merge",
 			args:     []interface{}{[]interface{}{1, 2}, []interface{}{3, 4}, []interface{}{5, 6}},
-			expected: "ARRAY_CONCAT([1 2], [3 4], [5 6])",
+			expected: "ARRAY_CONCAT([1, 2], [3, 4], [5, 6])",
 			hasError: false,
 		},
 		{
@@ -181,7 +181,7 @@ func TestArrayOperator_ToSQL(t *testing.T) {
 			name:     "merge with single array",
 			operator: "merge",
 			args:     []interface{}{[]interface{}{1, 2, 3}},
-			expected: "ARRAY_CONCAT([1 2 3])",
+			expected: "ARRAY_CONCAT([1, 2, 3])",
 			hasError: false,
 		},
 		{
@@ -252,7 +252,7 @@ func TestArrayOperator_DialectSupport(t *testing.T) {
 					name:     "map with literal array",
 					operator: "map",
 					args:     []any{[]any{1, 2, 3}, map[string]any{"+": []any{map[string]any{"var": "item"}, 1}}},
-					expected: "ARRAY(SELECT (elem + 1) FROM UNNEST([1 2 3]) AS elem)",
+					expected: "ARRAY(SELECT (elem + 1) FROM UNNEST([1, 2, 3]) AS elem)",
 					hasError: false,
 				},
 				{
@@ -275,7 +275,7 @@ func TestArrayOperator_DialectSupport(t *testing.T) {
 					name:     "filter with literal array",
 					operator: "filter",
 					args:     []any{[]any{1, 2, 3, 4, 5}, map[string]any{">": []any{map[string]any{"var": "item"}, 2}}},
-					expected: "ARRAY(SELECT elem FROM UNNEST([1 2 3 4 5]) AS elem WHERE elem > 2)",
+					expected: "ARRAY(SELECT elem FROM UNNEST([1, 2, 3, 4, 5]) AS elem WHERE elem > 2)",
 					hasError: false,
 				},
 				{
@@ -298,7 +298,7 @@ func TestArrayOperator_DialectSupport(t *testing.T) {
 					name:     "reduce with SUM pattern",
 					operator: "reduce",
 					args:     []any{[]any{1, 2, 3, 4}, map[string]any{"+": []any{map[string]any{"var": "accumulator"}, map[string]any{"var": "current"}}}, 0},
-					expected: "0 + COALESCE((SELECT SUM(elem) FROM UNNEST([1 2 3 4]) AS elem), 0)",
+					expected: "0 + COALESCE((SELECT SUM(elem) FROM UNNEST([1, 2, 3, 4]) AS elem), 0)",
 					hasError: false,
 				},
 				{
@@ -333,7 +333,7 @@ func TestArrayOperator_DialectSupport(t *testing.T) {
 					name:     "reduce with non-zero initial value",
 					operator: "reduce",
 					args:     []any{[]any{10, 20, 30}, map[string]any{"+": []any{map[string]any{"var": "accumulator"}, map[string]any{"var": "current"}}}, 100},
-					expected: "100 + COALESCE((SELECT SUM(elem) FROM UNNEST([10 20 30]) AS elem), 0)",
+					expected: "100 + COALESCE((SELECT SUM(elem) FROM UNNEST([10, 20, 30]) AS elem), 0)",
 					hasError: false,
 				},
 				// Reduce with current.field patterns (accessing object field)
@@ -610,7 +610,7 @@ func TestArrayOperator_valueToSQL(t *testing.T) {
 		{
 			name:     "literal array",
 			input:    []interface{}{1, 2, 3},
-			expected: "[1 2 3]",
+			expected: "[1, 2, 3]",
 			hasError: false,
 		},
 		{
@@ -898,7 +898,7 @@ func TestArrayOperator_EdgeCases(t *testing.T) {
 				[]any{1, 2, 3},
 				map[string]any{"var": "moreNumbers"},
 			},
-			expected: "ARRAY_CONCAT([1 2 3], moreNumbers)",
+			expected: "ARRAY_CONCAT([1, 2, 3], moreNumbers)",
 			hasError: false,
 		},
 		{

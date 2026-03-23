@@ -1171,7 +1171,7 @@ func TestArrayOperatorsDialectSupport(t *testing.T) {
 				{
 					name:     "map with literal array",
 					input:    `{"map": [[1, 2, 3], {"+": [{"var": "item"}, 10]}]}`,
-					expected: "WHERE ARRAY(SELECT (elem + 10) FROM UNNEST([1 2 3]) AS elem)",
+					expected: "WHERE ARRAY(SELECT (elem + 10) FROM UNNEST([1, 2, 3]) AS elem)",
 				},
 
 				// Filter operator tests
@@ -1188,7 +1188,7 @@ func TestArrayOperatorsDialectSupport(t *testing.T) {
 				{
 					name:     "filter with literal array",
 					input:    `{"filter": [[1, 2, 3, 4, 5], {">=": [{"var": "item"}, 3]}]}`,
-					expected: "WHERE ARRAY(SELECT elem FROM UNNEST([1 2 3 4 5]) AS elem WHERE elem >= 3)",
+					expected: "WHERE ARRAY(SELECT elem FROM UNNEST([1, 2, 3, 4, 5]) AS elem WHERE elem >= 3)",
 				},
 
 				// Reduce operator tests - SUM pattern
@@ -1205,7 +1205,7 @@ func TestArrayOperatorsDialectSupport(t *testing.T) {
 				{
 					name:     "reduce with literal array and SUM pattern",
 					input:    `{"reduce": [[10, 20, 30], {"+": [{"var": "accumulator"}, {"var": "current"}]}, 0]}`,
-					expected: "WHERE 0 + COALESCE((SELECT SUM(elem) FROM UNNEST([10 20 30]) AS elem), 0)",
+					expected: "WHERE 0 + COALESCE((SELECT SUM(elem) FROM UNNEST([10, 20, 30]) AS elem), 0)",
 				},
 
 				// Reduce operator tests - MIN pattern
