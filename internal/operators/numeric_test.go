@@ -600,6 +600,30 @@ func TestNumericOperator_valueToSQL_ProcessedValue(t *testing.T) {
 			expected: "'Inf'",
 			hasError: false,
 		},
+		{
+			name:     "large integer beyond int64 preserved exactly",
+			input:    "9223372036854775808",
+			expected: "9223372036854775808",
+			hasError: false,
+		},
+		{
+			name:     "integer at float64 precision boundary preserved exactly",
+			input:    "9007199254740993",
+			expected: "9007199254740993",
+			hasError: false,
+		},
+		{
+			name:     "scientific notation coerced via float",
+			input:    "1e3",
+			expected: "1000",
+			hasError: false,
+		},
+		{
+			name:     "positive sign integer preserved",
+			input:    "+42",
+			expected: "+42",
+			hasError: false,
+		},
 	}
 
 	for _, tt := range tests {

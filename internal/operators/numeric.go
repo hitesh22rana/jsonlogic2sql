@@ -313,10 +313,10 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 	// Pre-processed SQL from the parser arrives as ProcessedValue (handled above),
 	// so any plain string here is a raw JSON literal.
 	if str, ok := value.(string); ok {
+		if isIntegerLiteral(str) {
+			return str, nil
+		}
 		if num, err := strconv.ParseFloat(str, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
-			if num == float64(int64(num)) && !strings.Contains(str, ".") {
-				return fmt.Sprintf("%d", int64(num)), nil
-			}
 			return strconv.FormatFloat(num, 'f', -1, 64), nil
 		}
 		return n.dataOp.valueToSQL(str)
@@ -467,4 +467,26 @@ func (n *NumericOperator) generateComplexSQL(operator string, args []string) (st
 		// If we see them here, it means they weren't processed correctly
 		return "", fmt.Errorf("unsupported operator in numeric expression: %s", operator)
 	}
+}
+
+// isIntegerLiteral reports whether s matches ^[+-]?[0-9]+$ — a bare integer
+// with an optional sign and no decimal point, exponent, or other characters.
+// Validated strings are safe to emit directly as SQL numeric literals.
+func isIntegerLiteral(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	start := 0
+	if s[0] == '+' || s[0] == '-' {
+		start = 1
+	}
+	if start >= len(s) {
+		return false
+	}
+	for i := start; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
