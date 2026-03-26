@@ -115,6 +115,13 @@ make run
 [BigQuery] jsonlogic> {">": [{"var": "amount"}, 1000]}
 SQL: WHERE amount > 1000
 
+[BigQuery] jsonlogic> :params
+Parameterized mode: ON (output uses bind placeholders)
+
+[BigQuery] jsonlogic> {"==": [{"var": "status"}, "active"]}
+SQL:    WHERE status = @p1
+Params: [{p1: "active"}]
+
 [BigQuery] jsonlogic> :dialect
 Select dialect: PostgreSQL
 
