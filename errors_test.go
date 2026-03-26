@@ -169,6 +169,7 @@ func TestErrorCodeValues(t *testing.T) {
 		{ErrInvalidArgument, "E302"},
 		{ErrInvalidArgType, "E303"},
 		{ErrInvalidDefaultValue, "E304"},
+		{ErrUnreferencedPlaceholder, "E350"},
 	}
 
 	for _, tt := range tests {

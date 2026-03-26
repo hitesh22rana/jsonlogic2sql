@@ -443,6 +443,26 @@ func TestNewInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestErrUnreferencedPlaceholder(t *testing.T) {
+	msg := `placeholder @p1 (param "x") is not referenced in generated SQL; ` +
+		`a custom operator may have dropped an argument`
+	err := New(ErrUnreferencedPlaceholder, "", "", msg)
+
+	if err.Code != ErrUnreferencedPlaceholder {
+		t.Errorf("Code = %v, want %v", err.Code, ErrUnreferencedPlaceholder)
+	}
+	if err.Operator != "" || err.Path != "" {
+		t.Errorf("Operator and Path should be empty, got operator=%q path=%q", err.Operator, err.Path)
+	}
+	if err.Message != msg {
+		t.Errorf("Message = %q, want %q", err.Message, msg)
+	}
+	wantErrStr := "[E350]: " + msg
+	if err.Error() != wantErrStr {
+		t.Errorf("Error() = %q, want %q", err.Error(), wantErrStr)
+	}
+}
+
 func TestErrorCodes(t *testing.T) {
 	// Verify error codes are unique and in expected ranges
 	codes := map[ErrorCode]bool{
@@ -464,15 +484,16 @@ func TestErrorCodes(t *testing.T) {
 		ErrInvalidFieldType: true,
 		ErrInvalidEnumValue: true,
 		// Argument errors (E300-E399)
-		ErrInsufficientArgs:    true,
-		ErrTooManyArgs:         true,
-		ErrInvalidArgument:     true,
-		ErrInvalidArgType:      true,
-		ErrInvalidDefaultValue: true,
+		ErrInsufficientArgs:        true,
+		ErrTooManyArgs:             true,
+		ErrInvalidArgument:         true,
+		ErrInvalidArgType:          true,
+		ErrInvalidDefaultValue:     true,
+		ErrUnreferencedPlaceholder: true,
 	}
 
 	// Verify we have all expected codes
-	expectedCount := 19
+	expectedCount := 20
 	if len(codes) != expectedCount {
 		t.Errorf("Expected %d error codes, got %d", expectedCount, len(codes))
 	}
