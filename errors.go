@@ -54,11 +54,12 @@ const (
 	ErrInvalidEnumValue = tperrors.ErrInvalidEnumValue
 
 	// Argument errors (E300-E399).
-	ErrInsufficientArgs    = tperrors.ErrInsufficientArgs
-	ErrTooManyArgs         = tperrors.ErrTooManyArgs
-	ErrInvalidArgument     = tperrors.ErrInvalidArgument
-	ErrInvalidArgType      = tperrors.ErrInvalidArgType
-	ErrInvalidDefaultValue = tperrors.ErrInvalidDefaultValue
+	ErrInsufficientArgs        = tperrors.ErrInsufficientArgs
+	ErrTooManyArgs             = tperrors.ErrTooManyArgs
+	ErrInvalidArgument         = tperrors.ErrInvalidArgument
+	ErrInvalidArgType          = tperrors.ErrInvalidArgType
+	ErrInvalidDefaultValue     = tperrors.ErrInvalidDefaultValue
+	ErrUnreferencedPlaceholder = tperrors.ErrUnreferencedPlaceholder
 )
 
 // AsTranspileError attempts to extract a TranspileError from an error.

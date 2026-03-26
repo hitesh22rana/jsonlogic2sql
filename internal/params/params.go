@@ -1,0 +1,144 @@
+// Package params provides parameter collection and placeholder generation
+// for parameterized SQL output from the jsonlogic2sql transpiler.
+package params
+
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
+)
+
+// PlaceholderStyle controls the placeholder token format in generated SQL.
+type PlaceholderStyle int
+
+const (
+	// PlaceholderNamed uses @p1, @p2, ... (BigQuery, Spanner, ClickHouse).
+	PlaceholderNamed PlaceholderStyle = iota
+	// PlaceholderPositional uses $1, $2, ... (PostgreSQL, DuckDB).
+	PlaceholderPositional
+	// PlaceholderQuestion uses sequential ? placeholders.
+	// Reserved for future opt-in; no dialect maps here by default.
+	PlaceholderQuestion
+)
+
+// QueryParam represents a single bind parameter collected during parameterized transpilation.
+type QueryParam struct {
+	Name  string
+	Value interface{}
+}
+
+// ParamCollector accumulates bind parameters and generates placeholder tokens
+// during parameterized SQL generation. It is created per-call and passed
+// through method parameters to ensure thread-safety.
+type ParamCollector struct {
+	params []QueryParam
+	style  PlaceholderStyle
+	count  int
+}
+
+// NewParamCollector creates a ParamCollector for the given placeholder style.
+func NewParamCollector(style PlaceholderStyle) *ParamCollector {
+	return &ParamCollector{
+		style: style,
+	}
+}
+
+// StyleForDialect returns the default PlaceholderStyle for a SQL dialect.
+func StyleForDialect(d dialect.Dialect) PlaceholderStyle {
+	switch d {
+	case dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return PlaceholderPositional
+	case dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectClickHouse, dialect.DialectUnspecified:
+		return PlaceholderNamed
+	}
+	return PlaceholderNamed
+}
+
+// Add registers a new bind parameter and returns the dialect-appropriate
+// placeholder token to embed in the SQL string.
+func (pc *ParamCollector) Add(value interface{}) string {
+	pc.count++
+	name := "p" + strconv.Itoa(pc.count)
+	pc.params = append(pc.params, QueryParam{Name: name, Value: value})
+
+	switch pc.style {
+	case PlaceholderNamed:
+		return "@" + name
+	case PlaceholderPositional:
+		return "$" + strconv.Itoa(pc.count)
+	case PlaceholderQuestion:
+		return "?"
+	default:
+		return "@" + name
+	}
+}
+
+// Params returns the collected parameters in insertion order.
+func (pc *ParamCollector) Params() []QueryParam {
+	return pc.params
+}
+
+// Count returns the number of collected parameters.
+func (pc *ParamCollector) Count() int {
+	return pc.count
+}
+
+// Style returns the placeholder style used by this collector.
+func (pc *ParamCollector) Style() PlaceholderStyle {
+	return pc.style
+}
+
+// ValidatePlaceholderRefs is a best-effort safety guard that scans the final
+// SQL for each collected placeholder using style-specific boundary patterns.
+// It returns E350 ErrUnreferencedPlaceholder if any placeholder is not found,
+// indicating a custom operator may have dropped an argument.
+//
+// This is NOT a strict SQL token parser. It may produce false positives if a
+// custom operator emits SQL containing placeholder-like text inside string
+// literals (e.g., '@p1') or SQL comments (e.g., -- @p1, /* $1 */).
+// In normal usage this does not occur because the parameterized pipeline
+// replaces all user-originated literals with placeholders.
+func ValidatePlaceholderRefs(sql string, params []QueryParam, style PlaceholderStyle) error {
+	for i, p := range params {
+		pattern := placeholderRefPattern(i+1, p.Name, style)
+		if !pattern.MatchString(sql) {
+			placeholder := formatPlaceholder(i+1, p.Name, style)
+			return tperrors.New(tperrors.ErrUnreferencedPlaceholder, "", "",
+				fmt.Sprintf("placeholder %s (param %q) is not referenced in generated SQL; "+
+					"a custom operator may have dropped an argument", placeholder, p.Name))
+		}
+	}
+	return nil
+}
+
+// placeholderRefPattern builds a regex that matches a placeholder token with
+// strict token boundaries on both sides, avoiding partial matches like
+// @p1 inside @p10, or $1 inside $10.
+func placeholderRefPattern(index int, name string, style PlaceholderStyle) *regexp.Regexp {
+	switch style {
+	case PlaceholderNamed:
+		return regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@` + regexp.QuoteMeta(name) + `(?:[^A-Za-z0-9_]|$)`)
+	case PlaceholderPositional:
+		return regexp.MustCompile(`(?:^|[^A-Za-z0-9_$])\$` + strconv.Itoa(index) + `(?:[^A-Za-z0-9_]|$)`)
+	case PlaceholderQuestion:
+		return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))
+	}
+	return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))
+}
+
+// formatPlaceholder returns the placeholder string for a given index/name/style.
+func formatPlaceholder(index int, name string, style PlaceholderStyle) string {
+	switch style {
+	case PlaceholderNamed:
+		return "@" + name
+	case PlaceholderPositional:
+		return "$" + strconv.Itoa(index)
+	case PlaceholderQuestion:
+		return "?"
+	default:
+		return "@" + name
+	}
+}

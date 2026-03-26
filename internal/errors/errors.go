@@ -63,6 +63,10 @@ const (
 	ErrInvalidArgType ErrorCode = "E303"
 	// ErrInvalidDefaultValue indicates the default value is invalid.
 	ErrInvalidDefaultValue ErrorCode = "E304"
+	// ErrUnreferencedPlaceholder indicates a collected bind parameter has no
+	// matching placeholder in the generated SQL, typically because a custom
+	// operator dropped an argument.
+	ErrUnreferencedPlaceholder ErrorCode = "E350"
 )
 
 // TranspileError represents an error during JSONLogic transpilation.

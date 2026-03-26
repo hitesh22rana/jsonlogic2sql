@@ -8,6 +8,7 @@ import (
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
 	"github.com/h22rana/jsonlogic2sql/internal/operators"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 	"github.com/h22rana/jsonlogic2sql/internal/validator"
 )
 
@@ -51,9 +52,10 @@ func NewParser(config *operators.OperatorConfig) *Parser {
 		arrayOp:      operators.NewArrayOperator(config),
 	}
 
-	// Set the expression parser callback so operators can delegate
+	// Set the expression parser callbacks so operators can delegate
 	// nested expression parsing back to the parser (enabling custom operators)
 	config.SetExpressionParser(p.parseExpression)
+	config.SetParamExpressionParser(p.parseExpressionParam)
 
 	return p
 }
@@ -445,5 +447,287 @@ func (p *Parser) isPrimitive(value interface{}) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// ParseParameterized converts a JSON Logic expression to a SQL WHERE clause
+// with bind parameter placeholders instead of inlined literals.
+func (p *Parser) ParseParameterized(logic interface{}) (string, []params.QueryParam, error) {
+	if err := p.validator.Validate(logic); err != nil {
+		return "", nil, tperrors.NewValidationError(err)
+	}
+
+	style := params.StyleForDialect(p.config.GetDialect())
+	pc := params.NewParamCollector(style)
+
+	sql, err := p.parseExpressionParam(logic, "$", pc)
+	if err != nil {
+		return "", nil, err
+	}
+
+	whereSQL := fmt.Sprintf("WHERE %s", sql)
+
+	if vErr := params.ValidatePlaceholderRefs(whereSQL, pc.Params(), style); vErr != nil {
+		return "", nil, vErr
+	}
+
+	return whereSQL, pc.Params(), nil
+}
+
+// ParseConditionParameterized converts a JSON Logic expression to a SQL condition
+// (without WHERE keyword) with bind parameter placeholders.
+func (p *Parser) ParseConditionParameterized(logic interface{}) (string, []params.QueryParam, error) {
+	if err := p.validator.Validate(logic); err != nil {
+		return "", nil, tperrors.NewValidationError(err)
+	}
+
+	style := params.StyleForDialect(p.config.GetDialect())
+	pc := params.NewParamCollector(style)
+
+	sql, err := p.parseExpressionParam(logic, "$", pc)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if vErr := params.ValidatePlaceholderRefs(sql, pc.Params(), style); vErr != nil {
+		return "", nil, vErr
+	}
+
+	return sql, pc.Params(), nil
+}
+
+// parseExpressionParam is the parameterized variant of parseExpression. Keep in sync.
+func (p *Parser) parseExpressionParam(expr interface{}, path string, pc *params.ParamCollector) (string, error) {
+	if p.isPrimitive(expr) {
+		return "", tperrors.NewPrimitiveNotAllowed(path)
+	}
+
+	if _, ok := expr.([]interface{}); ok {
+		return "", tperrors.NewArrayNotAllowed(path)
+	}
+
+	if obj, ok := expr.(map[string]interface{}); ok {
+		if len(obj) != 1 {
+			return "", tperrors.NewMultipleKeys(path)
+		}
+
+		for operator, args := range obj {
+			operatorPath := tperrors.BuildPath(path, operator, -1)
+			return p.parseOperatorParam(operator, args, operatorPath, pc)
+		}
+	}
+
+	return "", tperrors.New(tperrors.ErrInvalidExpression, "", path,
+		fmt.Sprintf("invalid expression type: %T", expr))
+}
+
+// parseOperatorParam is the parameterized variant of parseOperator. Keep in sync.
+func (p *Parser) parseOperatorParam(operator string, args interface{}, path string, pc *params.ParamCollector) (string, error) {
+	if p.customOpLookup != nil {
+		if handler, ok := p.customOpLookup(operator); ok {
+			processedArgs, err := p.processCustomOperatorArgsParam(args, path, pc)
+			if err != nil {
+				return "", tperrors.Wrap(tperrors.ErrCustomOperatorFailed, operator, path,
+					"failed to process custom operator arguments", err)
+			}
+			sql, err := handler.ToSQL(operator, processedArgs)
+			if err != nil {
+				return "", tperrors.Wrap(tperrors.ErrCustomOperatorFailed, operator, path,
+					"custom operator failed", err)
+			}
+			return sql, nil
+		}
+	}
+
+	switch operator {
+	case "var":
+		sql, err := p.dataOp.ToSQLParam(operator, []interface{}{args}, pc)
+		return sql, p.wrapOperatorError(operator, path, err)
+	case "missing":
+		sql, err := p.dataOp.ToSQLParam(operator, []interface{}{args}, pc)
+		return sql, p.wrapOperatorError(operator, path, err)
+	case "missing_some":
+		if arr, ok := args.([]interface{}); ok {
+			sql, err := p.dataOp.ToSQLParam(operator, arr, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+
+	case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
+		if arr, ok := args.([]interface{}); ok {
+			processedArgs, err := p.processArgsParam(arr, path, pc)
+			if err != nil {
+				return "", err
+			}
+			sql, err := p.comparisonOp.ToSQLParam(operator, processedArgs, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+
+	case "and", "or", "if":
+		if arr, ok := args.([]interface{}); ok {
+			processedArgs, err := p.processArgsParam(arr, path, pc)
+			if err != nil {
+				return "", err
+			}
+			sql, err := p.logicalOp.ToSQLParam(operator, processedArgs, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+	case "!", "!!":
+		if arr, ok := args.([]interface{}); ok {
+			processedArgs, err := p.processArgsParam(arr, path, pc)
+			if err != nil {
+				return "", err
+			}
+			sql, err := p.logicalOp.ToSQLParam(operator, processedArgs, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		processedArg, err := p.processArgParam(args, path, 0, pc)
+		if err != nil {
+			return "", err
+		}
+		sql, err := p.logicalOp.ToSQLParam(operator, []interface{}{processedArg}, pc)
+		return sql, p.wrapOperatorError(operator, path, err)
+
+	case "+", "-", "*", "/", "%", "max", "min":
+		if arr, ok := args.([]interface{}); ok {
+			processedArgs, err := p.processArgsParam(arr, path, pc)
+			if err != nil {
+				return "", err
+			}
+			sql, err := p.numericOp.ToSQLParam(operator, processedArgs, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+
+	case "map", "filter", "reduce", "all", "some", "none", "merge":
+		if arr, ok := args.([]interface{}); ok {
+			sql, err := p.arrayOp.ToSQLParam(operator, arr, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+
+	case "cat", "substr":
+		if arr, ok := args.([]interface{}); ok {
+			sql, err := p.stringOp.ToSQLParam(operator, arr, pc)
+			return sql, p.wrapOperatorError(operator, path, err)
+		}
+		return "", tperrors.NewOperatorRequiresArray(operator, path)
+
+	default:
+		return "", tperrors.NewUnsupportedOperator(operator, path)
+	}
+}
+
+// processArgsParam is the parameterized variant of processArgs. Keep in sync.
+func (p *Parser) processArgsParam(args []interface{}, path string, pc *params.ParamCollector) ([]interface{}, error) {
+	processed := make([]interface{}, len(args))
+	for i, arg := range args {
+		processedArg, err := p.processArgParam(arg, path, i, pc)
+		if err != nil {
+			return nil, err
+		}
+		processed[i] = processedArg
+	}
+	return processed, nil
+}
+
+// processArgParam is the parameterized variant of processArg. Keep in sync.
+func (p *Parser) processArgParam(arg interface{}, path string, index int, pc *params.ParamCollector) (interface{}, error) {
+	if exprMap, ok := arg.(map[string]interface{}); ok {
+		if len(exprMap) == 1 {
+			for operator, opArgs := range exprMap {
+				operatorPath := tperrors.BuildPath(path, operator, index)
+
+				if !p.isBuiltInOperator(operator) {
+					sql, err := p.parseOperatorParam(operator, opArgs, operatorPath, pc)
+					if err != nil {
+						return nil, err
+					}
+					return operators.SQLResult(sql), nil
+				}
+
+				processedOpArgs, err := p.processOpArgsParam(opArgs, operatorPath, pc)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]interface{}{operator: processedOpArgs}, nil
+			}
+		}
+		return arg, nil
+	}
+
+	if arr, ok := arg.([]interface{}); ok {
+		argPath := tperrors.BuildArrayPath(path, index)
+		return p.processArgsParam(arr, argPath, pc)
+	}
+
+	return arg, nil
+}
+
+// processOpArgsParam is the parameterized variant of processOpArgs. Keep in sync.
+func (p *Parser) processOpArgsParam(opArgs interface{}, path string, pc *params.ParamCollector) (interface{}, error) {
+	if arr, ok := opArgs.([]interface{}); ok {
+		return p.processArgsParam(arr, path, pc)
+	}
+	return p.processArgParam(opArgs, path, 0, pc)
+}
+
+// processCustomOperatorArgsParam is the parameterized variant of processCustomOperatorArgs. Keep in sync.
+func (p *Parser) processCustomOperatorArgsParam(args interface{}, path string, pc *params.ParamCollector) ([]interface{}, error) {
+	if arr, ok := args.([]interface{}); ok {
+		processed := make([]interface{}, len(arr))
+		for i, arg := range arr {
+			argPath := tperrors.BuildArrayPath(path, i)
+			sql, err := p.processArgToSQLParam(arg, argPath, pc)
+			if err != nil {
+				return nil, err
+			}
+			processed[i] = sql
+		}
+		return processed, nil
+	}
+
+	sql, err := p.processArgToSQLParam(args, path, pc)
+	if err != nil {
+		return nil, err
+	}
+	return []interface{}{sql}, nil
+}
+
+// processArgToSQLParam is the parameterized variant of processArgToSQL. Keep in sync.
+func (p *Parser) processArgToSQLParam(arg interface{}, path string, pc *params.ParamCollector) (interface{}, error) {
+	if exprMap, ok := arg.(map[string]interface{}); ok {
+		if len(exprMap) == 1 {
+			for operator, opArgs := range exprMap {
+				operatorPath := tperrors.BuildPath(path, operator, -1)
+				sql, err := p.parseOperatorParam(operator, opArgs, operatorPath, pc)
+				if err != nil {
+					return nil, err
+				}
+				return sql, nil
+			}
+		}
+	}
+
+	return p.primitiveToSQLParam(arg, pc), nil
+}
+
+// primitiveToSQLParam is the parameterized variant of primitiveToSQL. Keep in sync.
+// Registers string and numeric values with the ParamCollector.
+func (p *Parser) primitiveToSQLParam(value interface{}, pc *params.ParamCollector) interface{} {
+	switch v := value.(type) {
+	case string:
+		return pc.Add(v)
+	case bool:
+		if v {
+			return "TRUE"
+		}
+		return "FALSE"
+	case nil:
+		return "NULL"
+	default:
+		return pc.Add(v)
 	}
 }

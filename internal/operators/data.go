@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // validIdentifier matches standard SQL identifiers with optional dot-notation
@@ -304,6 +306,172 @@ func (d *DataOperator) valueToSQL(value interface{}) (string, error) {
 		return fmt.Sprintf("%v", v), nil
 	case float32, float64:
 		return fmt.Sprintf("%v", v), nil
+	case bool:
+		if v {
+			return "TRUE", nil
+		}
+		return "FALSE", nil
+	case nil:
+		return "NULL", nil
+	default:
+		return "", fmt.Errorf("unsupported value type: %T", value)
+	}
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (d *DataOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	switch operator {
+	case "var":
+		return d.handleVarParam(args, pc)
+	case "missing":
+		return d.handleMissing(args)
+	case "missing_some":
+		return d.handleMissingSomeParam(args, pc)
+	default:
+		return "", fmt.Errorf("unsupported data operator: %s", operator)
+	}
+}
+
+// handleVarParam is the parameterized variant of handleVar. Keep in sync.
+func (d *DataOperator) handleVarParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("var operator requires at least 1 argument")
+	}
+
+	if varName, ok := args[0].(string); ok {
+		if varName == "" {
+			return ElemVar, nil
+		}
+
+		if d.schema() != nil {
+			if err := d.schema().ValidateField(varName); err != nil {
+				return "", err
+			}
+		}
+		columnName, err := d.convertVarName(varName)
+		if err != nil {
+			return "", err
+		}
+		return columnName, nil
+	}
+
+	if arr, ok := args[0].([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", fmt.Errorf("var operator array cannot be empty")
+		}
+
+		if varName, ok := arr[0].(string); ok {
+			if d.schema() != nil {
+				if err := d.schema().ValidateField(varName); err != nil {
+					return "", err
+				}
+			}
+			columnName, err := d.convertVarName(varName)
+			if err != nil {
+				return "", err
+			}
+
+			if len(arr) > 1 {
+				defaultValue := arr[1]
+				defaultSQL, err := d.valueToSQLParam(defaultValue, pc)
+				if err != nil {
+					return "", fmt.Errorf("invalid default value: %w", err)
+				}
+				return fmt.Sprintf("COALESCE(%s, %s)", columnName, defaultSQL), nil
+			}
+
+			return columnName, nil
+		}
+
+		return "", fmt.Errorf("var operator first argument must be a string")
+	}
+
+	return "", fmt.Errorf("var operator requires string, number, or array argument")
+}
+
+// handleMissingSomeParam is the parameterized variant of handleMissingSome. Keep in sync.
+func (d *DataOperator) handleMissingSomeParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("missing_some operator requires exactly 2 arguments")
+	}
+
+	minCount, err := d.getNumber(args[0])
+	if err != nil {
+		return "", fmt.Errorf("missing_some operator first argument must be a number")
+	}
+
+	varNames, ok := args[1].([]interface{})
+	if !ok {
+		return "", fmt.Errorf("missing_some operator second argument must be an array")
+	}
+
+	if len(varNames) == 0 {
+		return "", fmt.Errorf("missing_some operator variable list cannot be empty")
+	}
+
+	if minCount == 1 {
+		var nullConditions []string
+		for _, varName := range varNames {
+			name, ok := varName.(string)
+			if !ok {
+				return "", fmt.Errorf("all variable names in missing_some must be strings")
+			}
+			if d.schema() != nil {
+				if err := d.schema().ValidateField(name); err != nil {
+					return "", err
+				}
+			}
+			columnName, err := d.convertVarName(name)
+			if err != nil {
+				return "", err
+			}
+			nullConditions = append(nullConditions, fmt.Sprintf("%s IS NULL", columnName))
+		}
+		return fmt.Sprintf("(%s)", strings.Join(nullConditions, " OR ")), nil
+	}
+
+	var caseStatements []string
+	for _, varName := range varNames {
+		name, ok := varName.(string)
+		if !ok {
+			return "", fmt.Errorf("all variable names in missing_some must be strings")
+		}
+		if d.schema() != nil {
+			if err := d.schema().ValidateField(name); err != nil {
+				return "", err
+			}
+		}
+		columnName, err := d.convertVarName(name)
+		if err != nil {
+			return "", err
+		}
+		caseStatements = append(caseStatements, fmt.Sprintf("CASE WHEN %s IS NULL THEN 1 ELSE 0 END", columnName))
+	}
+
+	nullCount := strings.Join(caseStatements, " + ")
+	return fmt.Sprintf("(%s) >= %s", nullCount, pc.Add(minCount)), nil
+}
+
+// valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
+// Structural tokens (NULL, TRUE, FALSE) remain inline; user-data values
+// are registered with the ParamCollector and replaced by a placeholder.
+func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return d.valueToSQLParam(pv.Value, pc)
+	}
+
+	switch v := value.(type) {
+	case string:
+		return pc.Add(v), nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return pc.Add(v), nil
+	case float32:
+		return pc.Add(float64(v)), nil
+	case float64:
+		return pc.Add(v), nil
 	case bool:
 		if v {
 			return "TRUE", nil
