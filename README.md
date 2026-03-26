@@ -6,6 +6,7 @@ A Go library that converts JSON Logic expressions into SQL. This library provide
 
 - **Complete JSON Logic Support**: Implements all core JSON Logic operators
 - **SQL Dialect Support**: Target BigQuery, Spanner, PostgreSQL, DuckDB, or ClickHouse
+- **Parameterized Queries**: Generate SQL with bind placeholders (`@p1`, `$1`) and separate parameter values for safe execution
 - **Custom Operators**: Extensible registry pattern for custom SQL functions
 - **Schema Validation**: Optional field schema for strict column validation
 - **Structured Errors**: Error codes and JSONPath locations for debugging
@@ -16,6 +17,8 @@ A Go library that converts JSON Logic expressions into SQL. This library provide
 ```bash
 go get github.com/h22rana/jsonlogic2sql@latest
 ```
+
+### Inline SQL
 
 ```go
 package main
@@ -34,6 +37,29 @@ func main() {
         panic(err)
     }
     fmt.Println(sql) // Output: WHERE amount > 1000
+}
+```
+
+### Parameterized Queries
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/h22rana/jsonlogic2sql"
+)
+
+func main() {
+    sql, params, err := jsonlogic2sql.TranspileParameterized(
+        jsonlogic2sql.DialectBigQuery,
+        `{"and": [{"==": [{"var": "status"}, "active"]}, {">": [{"var": "amount"}, 1000]}]}`,
+    )
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(sql)    // Output: WHERE (status = @p1 AND amount > @p2)
+    fmt.Println(params) // Output: [{p1 active} {p2 1000}]
 }
 ```
 
@@ -61,6 +87,7 @@ func main() {
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) - Installation and basic usage
+- [Parameterized Queries](docs/parameterized-queries.md) - Bind-parameter output for safe SQL execution
 - [Operators](docs/operators.md) - All supported operators with examples
 - [SQL Dialects](docs/dialects.md) - Dialect-specific SQL generation
 - [Custom Operators](docs/custom-operators.md) - Extend with your own operators
@@ -76,7 +103,7 @@ func main() {
 
 > **Semantic Correctness Assumption:** This library assumes that the input JSONLogic is semantically correct. The transpiler generates SQL that directly corresponds to the JSONLogic structure without validating the logical correctness of the expressions.
 
-> **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. However, the caller should still validate input and use parameterized queries where appropriate for defense in depth.
+> **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. For maximum safety, use the [parameterized query API](docs/parameterized-queries.md) which generates SQL with bind placeholders instead of inlined literals.
 
 ## Interactive REPL
 

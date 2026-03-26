@@ -577,8 +577,61 @@ WHERE (transaction.amount > 10000 AND (user.verified = FALSE OR user.accountAgeD
 WHERE CASE WHEN (age >= 18 AND hasLicense = TRUE AND violations < 3) THEN 'approved' ELSE CASE WHEN age < 18 THEN 'too_young' ELSE 'rejected' END END
 ```
 
+## Parameterized Query Examples
+
+All examples above can be generated with bind parameter placeholders instead of inlined literals by using the `TranspileParameterized` family of methods.
+
+### Simple Parameterized Comparison
+
+```go
+sql, params, _ := jsonlogic2sql.TranspileParameterized(
+    jsonlogic2sql.DialectBigQuery,
+    `{"==": [{"var": "status"}, "active"]}`,
+)
+// sql    = "WHERE status = @p1"
+// params = [{Name: "p1", Value: "active"}]
+```
+
+### Parameterized IN List
+
+```go
+sql, params, _ := jsonlogic2sql.TranspileParameterized(
+    jsonlogic2sql.DialectBigQuery,
+    `{"in": [{"var": "country"}, ["US", "CA", "MX"]]}`,
+)
+// sql    = "WHERE country IN (@p1, @p2, @p3)"
+// params = [{Name: "p1", Value: "US"}, {Name: "p2", Value: "CA"}, {Name: "p3", Value: "MX"}]
+```
+
+### Parameterized Nested Conditions (PostgreSQL)
+
+```go
+sql, params, _ := jsonlogic2sql.TranspileParameterized(
+    jsonlogic2sql.DialectPostgreSQL,
+    `{"and": [{">": [{"var": "amount"}, 10000]}, {"==": [{"var": "status"}, "pending"]}]}`,
+)
+// sql    = "WHERE (amount > $1 AND status = $2)"
+// params = [{Name: "p1", Value: 10000}, {Name: "p2", Value: "pending"}]
+```
+
+### Parameterized Condition (Without WHERE)
+
+```go
+condition, params, _ := jsonlogic2sql.TranspileConditionParameterized(
+    jsonlogic2sql.DialectBigQuery,
+    `{">": [{"var": "amount"}, 1000]}`,
+)
+// condition = "amount > @p1"
+// params    = [{Name: "p1", Value: 1000}]
+
+query := fmt.Sprintf("SELECT * FROM orders WHERE %s AND created_at > @date", condition)
+```
+
+See [Parameterized Queries](parameterized-queries.md) for full documentation.
+
 ## See Also
 
 - [Operators](operators.md) - Full operator reference
 - [Custom Operators](custom-operators.md) - Creating custom operators
 - [Schema Validation](schema-validation.md) - Field validation
+- [Parameterized Queries](parameterized-queries.md) - Bind-parameter output for safe SQL execution

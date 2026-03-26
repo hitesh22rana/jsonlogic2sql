@@ -52,6 +52,54 @@ func TranspileConditionFromInterface(dialect Dialect, logic interface{}) (string
 
 Converts any JSON Logic interface{} to a SQL condition without WHERE.
 
+### TranspileParameterized
+
+```go
+func TranspileParameterized(dialect Dialect, jsonLogic string) (string, []QueryParam, error)
+```
+
+Converts a JSON Logic string to a SQL WHERE clause with bind parameter placeholders instead of inlined literals. Returns the SQL, collected parameters, and any error.
+
+### TranspileParameterizedFromMap
+
+```go
+func TranspileParameterizedFromMap(dialect Dialect, logic map[string]interface{}) (string, []QueryParam, error)
+```
+
+Converts a pre-parsed JSON Logic map to a SQL WHERE clause with bind parameter placeholders.
+
+### TranspileParameterizedFromInterface
+
+```go
+func TranspileParameterizedFromInterface(dialect Dialect, logic interface{}) (string, []QueryParam, error)
+```
+
+Converts any JSON Logic interface{} to a SQL WHERE clause with bind parameter placeholders.
+
+### TranspileConditionParameterized
+
+```go
+func TranspileConditionParameterized(dialect Dialect, jsonLogic string) (string, []QueryParam, error)
+```
+
+Converts a JSON Logic string to a SQL condition (without WHERE) with bind parameter placeholders.
+
+### TranspileConditionParameterizedFromMap
+
+```go
+func TranspileConditionParameterizedFromMap(dialect Dialect, logic map[string]interface{}) (string, []QueryParam, error)
+```
+
+Converts a pre-parsed JSON Logic map to a SQL condition (without WHERE) with bind parameter placeholders.
+
+### TranspileConditionParameterizedFromInterface
+
+```go
+func TranspileConditionParameterizedFromInterface(dialect Dialect, logic interface{}) (string, []QueryParam, error)
+```
+
+Converts any JSON Logic interface{} to a SQL condition (without WHERE) with bind parameter placeholders.
+
 ### NewTranspiler
 
 ```go
@@ -92,6 +140,12 @@ Main transpiler instance.
 | `TranspileCondition(jsonLogic string) (string, error)` | Convert JSON string to SQL without WHERE |
 | `TranspileConditionFromMap(logic map[string]interface{}) (string, error)` | Convert map to SQL without WHERE |
 | `TranspileConditionFromInterface(logic interface{}) (string, error)` | Convert interface to SQL without WHERE |
+| `TranspileParameterized(jsonLogic string) (string, []QueryParam, error)` | Convert JSON string to parameterized SQL with WHERE |
+| `TranspileParameterizedFromMap(logic map[string]interface{}) (string, []QueryParam, error)` | Convert map to parameterized SQL with WHERE |
+| `TranspileParameterizedFromInterface(logic interface{}) (string, []QueryParam, error)` | Convert interface to parameterized SQL with WHERE |
+| `TranspileConditionParameterized(jsonLogic string) (string, []QueryParam, error)` | Convert JSON string to parameterized SQL without WHERE |
+| `TranspileConditionParameterizedFromMap(logic map[string]interface{}) (string, []QueryParam, error)` | Convert map to parameterized SQL without WHERE |
+| `TranspileConditionParameterizedFromInterface(logic interface{}) (string, []QueryParam, error)` | Convert interface to parameterized SQL without WHERE |
 | `GetDialect() Dialect` | Get the configured dialect |
 | `SetSchema(schema *Schema)` | Set schema for field validation |
 | `RegisterOperator(name string, handler OperatorHandler) error` | Register custom operator with handler |
@@ -234,6 +288,17 @@ const (
 )
 ```
 
+### QueryParam
+
+Represents a single bind parameter collected during parameterized transpilation.
+
+```go
+type QueryParam struct {
+    Name  string      // "p1", "p2", etc.
+    Value interface{} // Go native type (string, float64, int64, bool)
+}
+```
+
 ### TranspileError
 
 Structured error type returned by transpilation operations.
@@ -317,5 +382,6 @@ Create a schema from a JSON file.
 ## See Also
 
 - [Getting Started](getting-started.md) - Basic usage examples
+- [Parameterized Queries](parameterized-queries.md) - Bind-parameter output for safe SQL execution
 - [Error Handling](error-handling.md) - Error codes and handling
 - [Custom Operators](custom-operators.md) - Operator registration

@@ -112,6 +112,42 @@ transpiler, _ := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectPostgreSQL)
 transpiler, _ := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectClickHouse)
 ```
 
+### Parameterized Queries
+
+For safer SQL execution, generate SQL with bind parameter placeholders:
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/h22rana/jsonlogic2sql"
+)
+
+func main() {
+    transpiler, _ := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectBigQuery)
+
+    sql, params, err := transpiler.TranspileParameterized(
+        `{"==": [{"var": "status"}, "active"]}`,
+    )
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(sql)    // Output: WHERE status = @p1
+    fmt.Println(params) // Output: [{p1 active}]
+
+    // Or use the convenience function
+    sql, params, err = jsonlogic2sql.TranspileParameterized(
+        jsonlogic2sql.DialectPostgreSQL,
+        `{">": [{"var": "amount"}, 1000]}`,
+    )
+    fmt.Println(sql)    // Output: WHERE amount > $1
+    fmt.Println(params) // Output: [{p1 1000}]
+}
+```
+
+See [Parameterized Queries](parameterized-queries.md) for detailed documentation.
+
 ## Variable Naming
 
 The transpiler preserves JSON Logic variable names as-is in the SQL output:
@@ -124,6 +160,7 @@ This allows for proper JSON column access in databases that support it (like Pos
 
 ## Next Steps
 
+- [Parameterized Queries](parameterized-queries.md) - Bind-parameter output for safe SQL execution
 - [Supported Operators](operators.md) - Learn about all available operators
 - [SQL Dialects](dialects.md) - Dialect-specific SQL generation details
 - [Custom Operators](custom-operators.md) - Extend with your own operators
