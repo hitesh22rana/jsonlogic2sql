@@ -117,6 +117,75 @@ func transpileCondition(_ js.Value, args []js.Value) interface{} {
 	return map[string]interface{}{"sql": sql}
 }
 
+// transpileParameterized(id: number, jsonLogic: string) => {sql: string, params: string} | {error: string}
+func transpileParameterized(_ js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return map[string]interface{}{"error": "id and jsonLogic arguments required"}
+	}
+	id := args[0].Int()
+	jsonLogic := args[1].String()
+
+	t, ok := transpilers[id]
+	if !ok {
+		return map[string]interface{}{"error": "transpiler not found"}
+	}
+
+	sql, params, err := t.TranspileParameterized(jsonLogic)
+	if err != nil {
+		errResult := map[string]interface{}{"error": err.Error()}
+		if tErr, ok := jsonlogic2sql.AsTranspileError(err); ok {
+			errResult["code"] = string(tErr.Code)
+			errResult["operator"] = tErr.Operator
+			errResult["path"] = tErr.Path
+		}
+		return errResult
+	}
+	paramsJSON, _ := json.Marshal(params)
+	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
+}
+
+// transpileConditionParameterized(id: number, jsonLogic: string) => {sql: string, params: string} | {error: string}
+func transpileConditionParameterized(_ js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return map[string]interface{}{"error": "id and jsonLogic arguments required"}
+	}
+	id := args[0].Int()
+	jsonLogic := args[1].String()
+
+	t, ok := transpilers[id]
+	if !ok {
+		return map[string]interface{}{"error": "transpiler not found"}
+	}
+
+	sql, params, err := t.TranspileConditionParameterized(jsonLogic)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	paramsJSON, _ := json.Marshal(params)
+	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
+}
+
+// quickTranspileParameterized(dialect: string, jsonLogic: string) => {sql: string, params: string} | {error: string}
+func quickTranspileParameterized(_ js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return map[string]interface{}{"error": "dialect and jsonLogic arguments required"}
+	}
+	dialectStr := args[0].String()
+	jsonLogic := args[1].String()
+
+	dialect, ok := dialetFromString(dialectStr)
+	if !ok {
+		return map[string]interface{}{"error": "unsupported dialect: " + dialectStr}
+	}
+
+	sql, params, err := jsonlogic2sql.TranspileParameterized(dialect, jsonLogic)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	paramsJSON, _ := json.Marshal(params)
+	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
+}
+
 // quickTranspile(dialect: string, jsonLogic: string) => {sql: string} | {error: string}
 // Convenience function that doesn't require creating a transpiler instance.
 func quickTranspile(_ js.Value, args []js.Value) interface{} {
@@ -177,14 +246,17 @@ func main() {
 
 	// Register all functions on the global jsonlogic2sql object
 	jsObj := map[string]interface{}{
-		"newTranspiler":      js.FuncOf(newTranspiler),
-		"setSchema":          js.FuncOf(setSchema),
-		"transpile":          js.FuncOf(transpile),
-		"transpileCondition": js.FuncOf(transpileCondition),
-		"quickTranspile":     js.FuncOf(quickTranspile),
-		"destroyTranspiler":  js.FuncOf(destroyTranspiler),
-		"getDialects":        js.FuncOf(getDialects),
-		"getSamples":         js.FuncOf(getSamples),
+		"newTranspiler":                     js.FuncOf(newTranspiler),
+		"setSchema":                         js.FuncOf(setSchema),
+		"transpile":                         js.FuncOf(transpile),
+		"transpileCondition":                js.FuncOf(transpileCondition),
+		"transpileParameterized":            js.FuncOf(transpileParameterized),
+		"transpileConditionParameterized":   js.FuncOf(transpileConditionParameterized),
+		"quickTranspile":                    js.FuncOf(quickTranspile),
+		"quickTranspileParameterized":       js.FuncOf(quickTranspileParameterized),
+		"destroyTranspiler":                 js.FuncOf(destroyTranspiler),
+		"getDialects":                       js.FuncOf(getDialects),
+		"getSamples":                        js.FuncOf(getSamples),
 	}
 
 	js.Global().Set("jsonlogic2sql", js.ValueOf(jsObj))

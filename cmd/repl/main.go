@@ -108,6 +108,9 @@ var currentDialect jsonlogic2sql.Dialect
 // currentSchema holds the loaded schema to preserve validation across dialect switches.
 var currentSchema *jsonlogic2sql.Schema
 
+// paramsMode controls whether output uses parameterized placeholders.
+var paramsMode bool
+
 // selectDialect prompts the user to select a SQL dialect.
 func selectDialect(scanner *bufio.Scanner) jsonlogic2sql.Dialect {
 	fmt.Println("Select SQL dialect:")
@@ -200,11 +203,21 @@ func main() {
 		}
 
 		// Process JSON Logic input
-		result, err := transpiler.Transpile(input)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		if paramsMode {
+			sql, params, err := transpiler.TranspileParameterized(input)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("SQL:    %s\n", sql)
+				printParams(params)
+			}
 		} else {
-			fmt.Printf("SQL: %s\n", result)
+			result, err := transpiler.Transpile(input)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("SQL: %s\n", result)
+			}
 		}
 		fmt.Println()
 	}
@@ -243,6 +256,27 @@ func promptSchema(scanner *bufio.Scanner) *jsonlogic2sql.Schema {
 	return schema
 }
 
+// printParams formats and prints the collected query parameters.
+func printParams(params []jsonlogic2sql.QueryParam) {
+	if len(params) == 0 {
+		fmt.Println("Params: (none)")
+		return
+	}
+	fmt.Printf("Params: [")
+	for i, p := range params {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		switch v := p.Value.(type) {
+		case string:
+			fmt.Printf("{%s: %q}", p.Name, v)
+		default:
+			fmt.Printf("{%s: %v}", p.Name, v)
+		}
+	}
+	fmt.Println("]")
+}
+
 func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *bufio.Scanner) *jsonlogic2sql.Transpiler {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
@@ -258,6 +292,13 @@ func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *
 		showExamples()
 	case ":dialect":
 		return handleDialectChange(scanner)
+	case ":params":
+		paramsMode = !paramsMode
+		if paramsMode {
+			fmt.Println("Parameterized mode: ON (output uses bind placeholders)")
+		} else {
+			fmt.Println("Parameterized mode: OFF (output uses inlined literals)")
+		}
 	case ":schema":
 		handleSchemaCommand(parts, transpiler)
 	case ":file":
@@ -297,11 +338,21 @@ func handleFileInput(parts []string, transpiler *jsonlogic2sql.Transpiler) {
 		return
 	}
 
-	result, err := transpiler.Transpile(input)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+	if paramsMode {
+		sql, params, err := transpiler.TranspileParameterized(input)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("SQL:    %s\n", sql)
+			printParams(params)
+		}
 	} else {
-		fmt.Printf("SQL: %s\n", result)
+		result, err := transpiler.Transpile(input)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("SQL: %s\n", result)
+		}
 	}
 	fmt.Println()
 }
@@ -617,12 +668,17 @@ func showHelp() {
 	fmt.Println("  :help          - Show this help message")
 	fmt.Println("  :examples      - Show example JSON Logic expressions")
 	fmt.Println("  :dialect       - Change the SQL dialect")
+	fmt.Println("  :params        - Toggle parameterized query output (bind placeholders)")
 	fmt.Println("  :schema <path> - Load schema for validation and type-aware SQL")
 	fmt.Println("  :file <path>   - Read JSON Logic from a file (for large inputs)")
 	fmt.Println("  :clear         - Clear the screen")
 	fmt.Println("  :quit          - Exit the REPL")
 	fmt.Println()
-	fmt.Printf("Current dialect: %s\n", getDialectName(currentDialect))
+	paramStatus := "OFF"
+	if paramsMode {
+		paramStatus = "ON"
+	}
+	fmt.Printf("Current dialect: %s | Params: %s\n", getDialectName(currentDialect), paramStatus)
 	fmt.Println()
 	fmt.Println("Enter JSON Logic expressions to convert them to SQL WHERE clauses.")
 	fmt.Println("Example: {\">\": [{\"var\": \"amount\"}, 1000]}")

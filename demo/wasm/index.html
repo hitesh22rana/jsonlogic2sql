@@ -73,6 +73,9 @@
                     <option value="clickhouse">ClickHouse</option>
                 </select>
                 <label style="min-width: auto;">
+                    <input type="checkbox" id="parameterized"> Parameterized
+                </label>
+                <label style="min-width: auto;">
                     <input type="checkbox" id="allDialects"> Compare all dialects
                 </label>
             </div>
@@ -115,6 +118,12 @@
                 <div class="section-label">SQL Output</div>
                 <div id="output" class="output success"></div>
                 <div id="multi-output" class="multi-output hidden"></div>
+            </div>
+
+            <!-- Params Output (shown when parameterized mode is on) -->
+            <div id="params-section" class="hidden" style="margin-top: 8px;">
+                <div class="section-label">Bind Parameters</div>
+                <div id="params-output" class="output" style="color: #d2a8ff; border-color: #d2a8ff33;"></div>
             </div>
 
             <div class="status">
@@ -215,25 +224,61 @@
             if (transpilerID === null) return;
             document.getElementById('output').classList.remove('hidden');
             document.getElementById('multi-output').classList.add('hidden');
+            const isParam = document.getElementById('parameterized').checked;
             const start = performance.now();
-            const fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+            let fn;
+            if (isParam) {
+                fn = currentMode === 'condition' ? 'transpileConditionParameterized' : 'transpileParameterized';
+            } else {
+                fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+            }
             const result = jsonlogic2sql[fn](transpilerID, input);
             document.getElementById('transpile-time').textContent = (performance.now() - start).toFixed(2) + 'ms';
             const output = document.getElementById('output');
-            if (result.error) { showError(result.error); }
-            else { output.textContent = result.sql; output.className = 'output ' + (currentMode === 'condition' ? 'condition' : 'success'); }
+            const paramsSection = document.getElementById('params-section');
+            const paramsOutput = document.getElementById('params-output');
+            if (result.error) {
+                showError(result.error);
+                paramsSection.classList.add('hidden');
+            } else {
+                output.textContent = result.sql;
+                output.className = 'output ' + (currentMode === 'condition' ? 'condition' : 'success');
+                if (isParam && result.params) {
+                    paramsSection.classList.remove('hidden');
+                    try {
+                        const params = JSON.parse(result.params);
+                        if (params && params.length > 0) {
+                            paramsOutput.textContent = params.map(p => p.Name + ' = ' + JSON.stringify(p.Value)).join('\n');
+                        } else {
+                            paramsOutput.textContent = '(no parameters)';
+                        }
+                    } catch (_) {
+                        paramsOutput.textContent = result.params;
+                    }
+                } else {
+                    paramsSection.classList.add('hidden');
+                }
+            }
         }
 
         function doTranspileAll(input) {
             document.getElementById('output').classList.add('hidden');
             const multi = document.getElementById('multi-output');
             multi.classList.remove('hidden'); multi.innerHTML = '';
+            const isParam = document.getElementById('parameterized').checked;
+            const paramsSection = document.getElementById('params-section');
+            paramsSection.classList.add('hidden');
             const start = performance.now();
             for (const d of allDialectsList) {
                 const t = jsonlogic2sql.newTranspiler(d);
                 if (t.error) continue;
                 if (schemaJSON) jsonlogic2sql.setSchema(t.id, schemaJSON);
-                const fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+                let fn;
+                if (isParam) {
+                    fn = currentMode === 'condition' ? 'transpileConditionParameterized' : 'transpileParameterized';
+                } else {
+                    fn = currentMode === 'condition' ? 'transpileCondition' : 'transpile';
+                }
                 const result = jsonlogic2sql[fn](t.id, input);
                 jsonlogic2sql.destroyTranspiler(t.id);
                 const row = document.createElement('div'); row.className = 'dialect-output';
@@ -242,8 +287,21 @@
                 tag.textContent = dialectLabels[d];
                 const sql = document.createElement('span');
                 sql.className = 'sql-text';
-                sql.textContent = result.error ? result.error : result.sql;
-                if (result.error) sql.style.color = '#f85149';
+                if (result.error) {
+                    sql.textContent = result.error;
+                    sql.style.color = '#f85149';
+                } else if (isParam && result.params) {
+                    let paramStr = '';
+                    try {
+                        const params = JSON.parse(result.params);
+                        if (params && params.length > 0) {
+                            paramStr = '  [' + params.map(p => p.Name + '=' + JSON.stringify(p.Value)).join(', ') + ']';
+                        }
+                    } catch (_) {}
+                    sql.innerHTML = result.sql + '<span style="color: #d2a8ff; opacity: 0.7;">' + paramStr + '</span>';
+                } else {
+                    sql.textContent = result.sql;
+                }
                 row.appendChild(tag);
                 row.appendChild(sql);
                 multi.appendChild(row);
@@ -256,6 +314,7 @@
             output.textContent = msg; output.className = 'output error';
             output.classList.remove('hidden');
             document.getElementById('multi-output').classList.add('hidden');
+            document.getElementById('params-section').classList.add('hidden');
         }
 
         function loadSamples() {
@@ -279,6 +338,7 @@
             doTranspile();
         });
         document.getElementById('dialect').addEventListener('change', createTranspiler);
+        document.getElementById('parameterized').addEventListener('change', doTranspile);
         document.getElementById('allDialects').addEventListener('change', doTranspile);
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
