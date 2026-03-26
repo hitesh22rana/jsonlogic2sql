@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql"
@@ -275,5 +278,216 @@ func TestContainsReversedWithApostrophe(t *testing.T) {
 	want := "WHERE column LIKE '%it''s%'"
 	if got != want {
 		t.Errorf("reversed contains\n  got:  %s\n  want: %s", got, want)
+	}
+}
+
+func TestPrintParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		params []jsonlogic2sql.QueryParam
+		want   string
+	}{
+		{
+			name:   "no params",
+			params: nil,
+			want:   "Params: (none)\n",
+		},
+		{
+			name:   "empty slice",
+			params: []jsonlogic2sql.QueryParam{},
+			want:   "Params: (none)\n",
+		},
+		{
+			name: "single string param",
+			params: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "active"},
+			},
+			want: `Params: [{p1: "active"}]` + "\n",
+		},
+		{
+			name: "single numeric param",
+			params: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: float64(1000)},
+			},
+			want: "Params: [{p1: 1000}]\n",
+		},
+		{
+			name: "multiple mixed params",
+			params: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "active"},
+				{Name: "p2", Value: float64(1000)},
+			},
+			want: `Params: [{p1: "active"}, {p2: 1000}]` + "\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			printParams(tt.params)
+
+			w.Close()
+			os.Stdout = old
+
+			var buf bytes.Buffer
+			_, _ = buf.ReadFrom(r)
+			got := buf.String()
+			if got != tt.want {
+				t.Errorf("printParams() output:\n  got:  %q\n  want: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParamsModeToggle(t *testing.T) {
+	origMode := paramsMode
+	defer func() { paramsMode = origMode }()
+
+	paramsMode = false
+	paramsMode = !paramsMode
+	if !paramsMode {
+		t.Error("expected paramsMode to be true after toggle")
+	}
+	paramsMode = !paramsMode
+	if paramsMode {
+		t.Error("expected paramsMode to be false after second toggle")
+	}
+}
+
+func TestTranspileParameterized_BigQuery(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	tests := []struct {
+		name       string
+		jsonExpr   string
+		wantSQL    string
+		wantParams []jsonlogic2sql.QueryParam
+	}{
+		{
+			name:     "simple equality",
+			jsonExpr: `{"==": [{"var": "status"}, "active"]}`,
+			wantSQL:  "WHERE status = @p1",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "active"},
+			},
+		},
+		{
+			name:     "numeric comparison",
+			jsonExpr: `{">": [{"var": "amount"}, 1000]}`,
+			wantSQL:  "WHERE amount > @p1",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: float64(1000)},
+			},
+		},
+		{
+			name:     "AND with mixed types",
+			jsonExpr: `{"and": [{"==": [{"var": "status"}, "pending"]}, {">": [{"var": "amount"}, 5000]}]}`,
+			wantSQL:  "WHERE (status = @p1 AND amount > @p2)",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "pending"},
+				{Name: "p2", Value: float64(5000)},
+			},
+		},
+		{
+			name:     "IN array",
+			jsonExpr: `{"in": [{"var": "country"}, ["US", "CA"]]}`,
+			wantSQL:  "WHERE country IN (@p1, @p2)",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "US"},
+				{Name: "p2", Value: "CA"},
+			},
+		},
+		{
+			name:       "null comparison produces no params",
+			jsonExpr:   `{"==": [{"var": "deleted_at"}, null]}`,
+			wantSQL:    "WHERE deleted_at IS NULL",
+			wantParams: nil,
+		},
+		{
+			name:       "boolean comparison produces no params",
+			jsonExpr:   `{"==": [{"var": "active"}, true]}`,
+			wantSQL:    "WHERE active = TRUE",
+			wantParams: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, params, err := tr.TranspileParameterized(tt.jsonExpr)
+			if err != nil {
+				t.Fatalf("TranspileParameterized error: %v", err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("SQL:\n  got:  %s\n  want: %s", sql, tt.wantSQL)
+			}
+			if tt.wantParams == nil {
+				if len(params) != 0 {
+					t.Errorf("Params: got %v, want nil/empty", params)
+				}
+			} else {
+				if len(params) != len(tt.wantParams) {
+					t.Fatalf("Params length: got %d, want %d", len(params), len(tt.wantParams))
+				}
+				for i, want := range tt.wantParams {
+					if params[i].Name != want.Name {
+						t.Errorf("Param[%d].Name: got %q, want %q", i, params[i].Name, want.Name)
+					}
+					if fmt.Sprintf("%v", params[i].Value) != fmt.Sprintf("%v", want.Value) {
+						t.Errorf("Param[%d].Value: got %v, want %v", i, params[i].Value, want.Value)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTranspileParameterized_PostgreSQL(t *testing.T) {
+	tr, err := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectPostgreSQL)
+	if err != nil {
+		t.Fatalf("NewTranspiler: %v", err)
+	}
+
+	sql, params, err := tr.TranspileParameterized(`{"==": [{"var": "email"}, "alice@example.com"]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized error: %v", err)
+	}
+
+	wantSQL := "WHERE email = $1"
+	if sql != wantSQL {
+		t.Errorf("SQL: got %q, want %q", sql, wantSQL)
+	}
+	if len(params) != 1 || params[0].Name != "p1" || params[0].Value != "alice@example.com" {
+		t.Errorf("Params: got %v, want [{p1 alice@example.com}]", params)
+	}
+}
+
+func TestTranspileParameterized_CustomOperator(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	sql, _, err := tr.TranspileParameterized(`{"toLower": [{"var": "name"}]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized error: %v", err)
+	}
+
+	wantSQL := "WHERE LOWER(name)"
+	if sql != wantSQL {
+		t.Errorf("SQL: got %q, want %q", sql, wantSQL)
+	}
+}
+
+func TestTranspileParameterized_Error(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	_, _, err := tr.TranspileParameterized(`{invalid json}`)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+
+	_, _, err = tr.TranspileParameterized(`{"unknownOp": [1, 2]}`)
+	if err == nil {
+		t.Fatal("expected error for unknown operator")
 	}
 }
