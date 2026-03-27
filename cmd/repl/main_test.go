@@ -122,6 +122,18 @@ func TestParseContainsArgs(t *testing.T) {
 			wantColumn: "col",
 			wantPat:    "@p1",
 		},
+		{
+			name:       "reversed placeholder arg (parameterized BigQuery)",
+			args:       []interface{}{"@p1", "col"},
+			wantColumn: "col",
+			wantPat:    "@p1",
+		},
+		{
+			name:       "reversed placeholder arg (parameterized PostgreSQL)",
+			args:       []interface{}{"$1", "col"},
+			wantColumn: "col",
+			wantPat:    "$1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -668,6 +680,16 @@ func TestLikeOperatorsNonParamStillWork(t *testing.T) {
 			jsonExpr: `{"contains": [{"var": "column"}, "it's"]}`,
 			want:     "WHERE column LIKE '%it''s%'",
 		},
+		{
+			name:     "contains reversed args non-param",
+			jsonExpr: `{"contains": ["foo", {"var": "name"}]}`,
+			want:     "WHERE name LIKE '%foo%'",
+		},
+		{
+			name:     "!contains reversed args non-param",
+			jsonExpr: `{"!contains": ["bar", {"var": "col"}]}`,
+			want:     "WHERE col NOT LIKE '%bar%'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -678,6 +700,55 @@ func TestLikeOperatorsNonParamStillWork(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("Transpile(%s)\n  got:  %s\n  want: %s", tt.jsonExpr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainsReversedArgsParameterized(t *testing.T) {
+	escReplace := "REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_')"
+
+	tests := []struct {
+		name       string
+		jsonExpr   string
+		wantSQL    string
+		wantParams []jsonlogic2sql.QueryParam
+	}{
+		{
+			name:     "contains reversed parameterized",
+			jsonExpr: `{"contains": ["foo", {"var": "name"}]}`,
+			wantSQL:  "WHERE name LIKE CONCAT('%', " + escReplace + ", '%')",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "foo"},
+			},
+		},
+		{
+			name:     "!contains reversed parameterized",
+			jsonExpr: `{"!contains": ["bar", {"var": "col"}]}`,
+			wantSQL:  "WHERE col NOT LIKE CONCAT('%', " + escReplace + ", '%')",
+			wantParams: []jsonlogic2sql.QueryParam{
+				{Name: "p1", Value: "bar"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := setupTestTranspiler(t)
+			sql, params, err := tr.TranspileParameterized(tt.jsonExpr)
+			if err != nil {
+				t.Fatalf("TranspileParameterized error: %v", err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("SQL:\n  got:  %s\n  want: %s", sql, tt.wantSQL)
+			}
+			if len(params) != len(tt.wantParams) {
+				t.Fatalf("Params length: got %d, want %d", len(params), len(tt.wantParams))
+			}
+			for i, want := range tt.wantParams {
+				if params[i].Name != want.Name || fmt.Sprintf("%v", params[i].Value) != fmt.Sprintf("%v", want.Value) {
+					t.Errorf("Param[%d]: got {%s %v}, want {%s %v}", i, params[i].Name, params[i].Value, want.Name, want.Value)
+				}
 			}
 		})
 	}
