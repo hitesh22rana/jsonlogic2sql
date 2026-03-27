@@ -67,10 +67,11 @@ func escapeLikeExpr(expr string) string {
 }
 
 // buildLikeSQL builds a LIKE/NOT LIKE expression.
-// When the pattern argument is a SQL string literal (non-parameterized mode),
-// it inlines the pattern. Otherwise (parameterized mode), it uses CONCAT
-// with SQL-level REPLACE escaping so that bind parameter values containing
-// LIKE metacharacters (%, _) are treated as literals.
+//
+// Three pattern argument forms are handled:
+//  1. SQL string literal ('hello'): unquote, escape LIKE wildcards, inline.
+//  2. Bind placeholder (@p1, $1): wrap with SQL REPLACE for runtime escaping.
+//  3. Unquoted primitive (1000, TRUE): treat as a literal value, escape and inline.
 func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string {
 	keyword := "LIKE"
 	if negate {
@@ -80,21 +81,23 @@ func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string
 		raw := unescapeSQLString(patternArg)
 		return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(raw), suffix)
 	}
-	// patternArg is a SQL expression (placeholder or column ref): use CONCAT
-	// with REPLACE-based escaping of LIKE wildcards in the bound value.
-	escaped := escapeLikeExpr(patternArg)
-	parts := make([]string, 0, 3)
-	if prefix != "" {
-		parts = append(parts, fmt.Sprintf("'%s'", prefix))
+	if isPlaceholder(patternArg) {
+		escaped := escapeLikeExpr(patternArg)
+		parts := make([]string, 0, 3)
+		if prefix != "" {
+			parts = append(parts, fmt.Sprintf("'%s'", prefix))
+		}
+		parts = append(parts, escaped)
+		if suffix != "" {
+			parts = append(parts, fmt.Sprintf("'%s'", suffix))
+		}
+		if len(parts) == 1 {
+			return fmt.Sprintf("%s %s %s", column, keyword, parts[0])
+		}
+		return fmt.Sprintf("%s %s CONCAT(%s)", column, keyword, strings.Join(parts, ", "))
 	}
-	parts = append(parts, escaped)
-	if suffix != "" {
-		parts = append(parts, fmt.Sprintf("'%s'", suffix))
-	}
-	if len(parts) == 1 {
-		return fmt.Sprintf("%s %s %s", column, keyword, parts[0])
-	}
-	return fmt.Sprintf("%s %s CONCAT(%s)", column, keyword, strings.Join(parts, ", "))
+	// Unquoted primitive (numeric, boolean, etc.): treat as literal value.
+	return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(patternArg), suffix)
 }
 
 // placeholderRe matches bind-parameter placeholders across all supported dialects:
