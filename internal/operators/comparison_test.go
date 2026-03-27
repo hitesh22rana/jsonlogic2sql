@@ -214,7 +214,7 @@ func TestComparisonOperator_ToSQL(t *testing.T) {
 			name:     "in with string containment",
 			operator: "in",
 			args:     []interface{}{map[string]interface{}{"var": "field"}, "not-array"},
-			expected: "POSITION(field IN 'not-array') > 0",
+			expected: "STRPOS('not-array', field) > 0",
 			hasError: false,
 		},
 
@@ -1426,7 +1426,7 @@ func TestComparisonOperator_handleIn_WithVarRightSide(t *testing.T) {
 			dialect:  dialect.DialectBigQuery,
 			leftArg:  "3",
 			rightArg: float64(12345),
-			expected: "POSITION('3' IN 12345) > 0",
+			expected: "STRPOS(12345, '3') > 0",
 			hasError: false,
 		},
 	}

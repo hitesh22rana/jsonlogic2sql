@@ -509,7 +509,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "startsWith parameterized",
 			jsonExpr: `{"startsWith": [{"var": "name"}, "Al"]}`,
-			wantSQL:  "WHERE name LIKE CONCAT(@p1, '%')",
+			wantSQL:  "WHERE name LIKE CONCAT(REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "Al"},
 			},
@@ -517,7 +517,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!startsWith parameterized",
 			jsonExpr: `{"!startsWith": [{"var": "name"}, "Al"]}`,
-			wantSQL:  "WHERE name NOT LIKE CONCAT(@p1, '%')",
+			wantSQL:  "WHERE name NOT LIKE CONCAT(REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "Al"},
 			},
@@ -525,7 +525,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "endsWith parameterized",
 			jsonExpr: `{"endsWith": [{"var": "email"}, "@example.com"]}`,
-			wantSQL:  "WHERE email LIKE CONCAT('%', @p1)",
+			wantSQL:  "WHERE email LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "@example.com"},
 			},
@@ -533,7 +533,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!endsWith parameterized",
 			jsonExpr: `{"!endsWith": [{"var": "email"}, "@example.com"]}`,
-			wantSQL:  "WHERE email NOT LIKE CONCAT('%', @p1)",
+			wantSQL:  "WHERE email NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "@example.com"},
 			},
@@ -541,7 +541,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "contains parameterized",
 			jsonExpr: `{"contains": [{"var": "desc"}, "hello"]}`,
-			wantSQL:  "WHERE desc LIKE CONCAT('%', @p1, '%')",
+			wantSQL:  "WHERE desc LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "hello"},
 			},
@@ -549,7 +549,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!contains parameterized",
 			jsonExpr: `{"!contains": [{"var": "desc"}, "hello"]}`,
-			wantSQL:  "WHERE desc NOT LIKE CONCAT('%', @p1, '%')",
+			wantSQL:  "WHERE desc NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "hello"},
 			},

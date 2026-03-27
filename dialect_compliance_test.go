@@ -310,6 +310,17 @@ func TestDialectSpecificStringFunctions(t *testing.T) {
 			},
 		},
 		{
+			name:  "in string containment with literal on right",
+			input: `{"in": ["test", "this is a test string"]}`,
+			expected: map[Dialect]string{
+				DialectBigQuery:   "WHERE STRPOS('this is a test string', 'test') > 0",
+				DialectSpanner:    "WHERE STRPOS('this is a test string', 'test') > 0",
+				DialectPostgreSQL: "WHERE POSITION('test' IN 'this is a test string') > 0",
+				DialectDuckDB:     "WHERE STRPOS('this is a test string', 'test') > 0",
+				DialectClickHouse: "WHERE position('this is a test string', 'test') > 0",
+			},
+		},
+		{
 			name:  "substr with start and length",
 			input: `{"substr": [{"var": "text"}, 5, 10]}`,
 			expected: map[Dialect]string{

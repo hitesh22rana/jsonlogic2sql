@@ -1030,7 +1030,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "in with string for substring check",
 			input:    `{"in": ["test", "this is a test string"]}`,
-			expected: "WHERE POSITION('test' IN 'this is a test string') > 0",
+			expected: "WHERE STRPOS('this is a test string', 'test') > 0",
 			hasError: false,
 		},
 
