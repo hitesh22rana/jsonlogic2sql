@@ -690,6 +690,16 @@ func TestLikeOperatorsNonParamStillWork(t *testing.T) {
 			jsonExpr: `{"!contains": ["bar", {"var": "col"}]}`,
 			want:     "WHERE col NOT LIKE '%bar%'",
 		},
+		{
+			name:     "contains with numeric pattern non-param",
+			jsonExpr: `{"contains": [{"var": "desc"}, 1000]}`,
+			want:     "WHERE desc LIKE '%1000%'",
+		},
+		{
+			name:     "startsWith with numeric pattern non-param",
+			jsonExpr: `{"startsWith": [{"var": "code"}, 404]}`,
+			want:     "WHERE code LIKE '404%'",
+		},
 	}
 
 	for _, tt := range tests {
