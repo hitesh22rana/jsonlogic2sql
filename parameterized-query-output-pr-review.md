@@ -124,3 +124,18 @@ Previous issue was also re-tested:
 
 The fix appears correct based on runtime REPL output and passing tests.  
 The specific concern that CONCAT-based SQL is invalid is **not reproduced** in the generated statements from this branch.
+
+## Test Hardening Added
+
+To ensure findings remain protected against future regressions, additional tests were added:
+
+1. `cmd/repl/main_test.go`
+   - `TestTranspileParameterized_LikeOperators_PlaceholderNotQuoted`
+   - Asserts placeholders are not quoted inside LIKE literals across dialects (BigQuery, PostgreSQL, DuckDB, ClickHouse).
+2. `parameterized_test.go`
+   - Added numeric regression case: `"9223372036854775808"` remains exact in parameterized output params.
+
+Validation after adding tests:
+- `go test ./cmd/repl -run TestTranspileParameterized_LikeOperators_PlaceholderNotQuoted -count=1 -v` ✅
+- `go test ./... -run TestTranspileParameterized_Numeric -count=1` ✅
+- `go test ./...` ✅
