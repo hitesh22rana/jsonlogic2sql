@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql"
@@ -576,6 +577,59 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 				if fmt.Sprintf("%v", params[i].Value) != fmt.Sprintf("%v", want.Value) {
 					t.Errorf("Param[%d].Value: got %v, want %v", i, params[i].Value, want.Value)
 				}
+			}
+		})
+	}
+}
+
+func TestTranspileParameterized_LikeOperators_PlaceholderNotQuoted(t *testing.T) {
+	tests := []struct {
+		name         string
+		dialect      jsonlogic2sql.Dialect
+		jsonExpr     string
+		quotedShould string
+	}{
+		{
+			name:         "bigquery startsWith placeholder not quoted",
+			dialect:      jsonlogic2sql.DialectBigQuery,
+			jsonExpr:     `{"startsWith": [{"var": "name"}, "Al"]}`,
+			quotedShould: "'@p1%",
+		},
+		{
+			name:         "postgres startsWith placeholder not quoted",
+			dialect:      jsonlogic2sql.DialectPostgreSQL,
+			jsonExpr:     `{"startsWith": [{"var": "name"}, "Al"]}`,
+			quotedShould: "'$1%",
+		},
+		{
+			name:         "duckdb contains placeholder not quoted",
+			dialect:      jsonlogic2sql.DialectDuckDB,
+			jsonExpr:     `{"contains": [{"var": "name"}, "Al"]}`,
+			quotedShould: "'%$1%",
+		},
+		{
+			name:         "clickhouse contains placeholder not quoted",
+			dialect:      jsonlogic2sql.DialectClickHouse,
+			jsonExpr:     `{"contains": [{"var": "name"}, "Al"]}`,
+			quotedShould: "'%@p1%",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr, err := jsonlogic2sql.NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler: %v", err)
+			}
+			registerCustomOperators(tr)
+
+			sql, _, err := tr.TranspileParameterized(tt.jsonExpr)
+			if err != nil {
+				t.Fatalf("TranspileParameterized error: %v", err)
+			}
+
+			if strings.Contains(sql, tt.quotedShould) {
+				t.Fatalf("placeholder appears quoted in LIKE pattern, SQL: %s", sql)
 			}
 		})
 	}

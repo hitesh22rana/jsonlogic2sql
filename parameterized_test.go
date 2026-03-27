@@ -173,6 +173,15 @@ func TestTranspileParameterized_Numeric(t *testing.T) {
 			wantSQL:    "WHERE GREATEST(x, @p1)",
 			wantParams: []QueryParam{{Name: "p1", Value: float64(100)}},
 		},
+		{
+			name:      "large integer string preserved exactly",
+			jsonLogic: `{"*": ["9223372036854775808", 2]}`,
+			wantSQL:   "WHERE (@p1 * @p2)",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: "9223372036854775808"},
+				{Name: "p2", Value: float64(2)},
+			},
+		},
 	}
 
 	for _, tt := range tests {
