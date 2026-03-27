@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -1112,6 +1113,12 @@ func numericParamValuesEqual(a, b interface{}) bool {
 	if a == b {
 		return true
 	}
+	if abi, ok := a.(*big.Int); ok {
+		if bbi, ok2 := b.(*big.Int); ok2 {
+			return abi.Cmp(bbi) == 0
+		}
+		return false
+	}
 	af, aok := toFloat64ForCompare(a)
 	bf, bok := toFloat64ForCompare(b)
 	return aok && bok && af == bf
@@ -1388,19 +1395,19 @@ func TestNumericOperator_valueToSQLParam(t *testing.T) {
 			},
 		},
 		{
-			name:    "large integer beyond int64 preserved as string",
+			name:    "large integer beyond int64 preserved as big.Int",
 			input:   "9223372036854775808",
 			wantSQL: "@p1",
 			wantParams: []params.QueryParam{
-				{Name: "p1", Value: "9223372036854775808"},
+				{Name: "p1", Value: newBigInt("9223372036854775808")},
 			},
 		},
 		{
-			name:    "negative large integer preserved as string",
+			name:    "negative large integer preserved as big.Int",
 			input:   "-9223372036854775809",
 			wantSQL: "@p1",
 			wantParams: []params.QueryParam{
-				{Name: "p1", Value: "-9223372036854775809"},
+				{Name: "p1", Value: newBigInt("-9223372036854775809")},
 			},
 		},
 	}
@@ -1575,4 +1582,9 @@ func TestNumericOperator_processComplexArgsForComparisonParam(t *testing.T) {
 			{Name: "p1", Value: float64(1)},
 		})
 	})
+}
+
+func newBigInt(s string) *big.Int {
+	bi, _ := new(big.Int).SetString(s, 10)
+	return bi
 }
