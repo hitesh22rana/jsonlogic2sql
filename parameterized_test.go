@@ -580,6 +580,30 @@ func TestTranspileParameterized_BoolAndNullNotParameterized(t *testing.T) {
 	_ = sql
 }
 
+func TestTranspileParameterized_LargeIntegerPrecision(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+
+	sql, params, err := tp.TranspileParameterized(`{"*": ["9223372036854775808", 2]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if sql != "WHERE (@p1 * @p2)" {
+		t.Errorf("SQL = %q, want %q", sql, "WHERE (@p1 * @p2)")
+	}
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d", len(params))
+	}
+	if params[0].Value != "9223372036854775808" {
+		t.Errorf("param[0].Value = %v (%T), want string 9223372036854775808", params[0].Value, params[0].Value)
+	}
+	if params[1].Value != float64(2) {
+		t.Errorf("param[1].Value = %v (%T), want float64(2)", params[1].Value, params[1].Value)
+	}
+}
+
 func assertParams(t *testing.T, got, want []QueryParam) {
 	t.Helper()
 	if len(got) != len(want) {

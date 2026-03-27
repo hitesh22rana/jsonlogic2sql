@@ -1387,6 +1387,22 @@ func TestNumericOperator_valueToSQLParam(t *testing.T) {
 				{Name: "p1", Value: "hello"},
 			},
 		},
+		{
+			name:    "large integer beyond int64 preserved as string",
+			input:   "9223372036854775808",
+			wantSQL: "@p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "9223372036854775808"},
+			},
+		},
+		{
+			name:    "negative large integer preserved as string",
+			input:   "-9223372036854775809",
+			wantSQL: "@p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "-9223372036854775809"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
