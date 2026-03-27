@@ -47,46 +47,71 @@ func extractFromArrayString(s string) string {
 	return s
 }
 
+// isSQLStringLiteral returns true if s is a SQL-quoted string literal (e.g., 'hello').
+// In non-parameterized mode, string args arrive as SQL literals like 'Al'.
+// In parameterized mode, they arrive as placeholders like @p1 or $1.
+func isSQLStringLiteral(s string) bool {
+	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
+}
+
+// buildLikeSQL builds a LIKE/NOT LIKE expression.
+// When the pattern argument is a SQL string literal (non-parameterized mode),
+// it inlines the pattern. Otherwise (parameterized mode), it uses CONCAT
+// so that bind placeholders remain outside string literals.
+func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string {
+	keyword := "LIKE"
+	if negate {
+		keyword = "NOT LIKE"
+	}
+	if isSQLStringLiteral(patternArg) {
+		raw := unescapeSQLString(patternArg)
+		return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(raw), suffix)
+	}
+	// patternArg is a SQL expression (placeholder or column ref): use CONCAT
+	parts := make([]string, 0, 3)
+	if prefix != "" {
+		parts = append(parts, fmt.Sprintf("'%s'", prefix))
+	}
+	parts = append(parts, patternArg)
+	if suffix != "" {
+		parts = append(parts, fmt.Sprintf("'%s'", suffix))
+	}
+	if len(parts) == 1 {
+		return fmt.Sprintf("%s %s %s", column, keyword, parts[0])
+	}
+	return fmt.Sprintf("%s %s CONCAT(%s)", column, keyword, strings.Join(parts, ", "))
+}
+
 // parseContainsArgs parses the arguments for contains/!contains operators.
-// Returns the column and pattern to use in the LIKE clause.
+// Returns the column and the raw pattern argument (preserving SQL quoting
+// so that buildLikeSQL can distinguish literals from placeholders).
 func parseContainsArgs(args []interface{}) (column, pattern string) {
 	arg0Str, arg0IsStr := args[0].(string)
 	arg1Str, arg1IsStr := args[1].(string)
 
 	if arg0IsStr && arg1IsStr {
-		// Check if either argument is an array string representation.
 		if strings.HasPrefix(arg1Str, "[") && strings.HasSuffix(arg1Str, "]") {
-			// Second arg is an array, extract first element.
 			column = arg0Str
-			pattern = extractFromArrayString(arg1Str)
-		} else if strings.HasPrefix(arg0Str, "[") && strings.HasSuffix(arg0Str, "]") {
-			// First arg is an array (reversed case).
-			column = arg1Str
-			pattern = extractFromArrayString(arg0Str)
-		} else {
-			// Check if arguments are reversed (pattern first, column second).
-			arg0Quoted := len(arg0Str) >= 2 && arg0Str[0] == '\'' && arg0Str[len(arg0Str)-1] == '\''
-			arg1Quoted := len(arg1Str) >= 2 && arg1Str[0] == '\'' && arg1Str[len(arg1Str)-1] == '\''
-
-			if arg0Quoted && !arg1Quoted {
-				// Reversed: pattern is first, column is second.
-				column = arg1Str
-				pattern = arg0Str
-			} else {
-				// Normal: column is first, pattern is second.
-				column = arg0Str
-				pattern = arg1Str
-			}
+			inner := extractFromArrayString(arg1Str)
+			return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
 		}
-	} else {
-		// Default: first is column, second is pattern.
-		column = args[0].(string)
-		pattern = args[1].(string)
-		// Check if pattern is an array string and extract value.
-		pattern = extractFromArrayString(pattern)
+		if strings.HasPrefix(arg0Str, "[") && strings.HasSuffix(arg0Str, "]") {
+			column = arg1Str
+			inner := extractFromArrayString(arg0Str)
+			return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
+		}
+		if isSQLStringLiteral(arg0Str) && !isSQLStringLiteral(arg1Str) {
+			return arg1Str, arg0Str
+		}
+		return arg0Str, arg1Str
 	}
 
-	pattern = unescapeSQLString(pattern)
+	column = args[0].(string)
+	pattern = args[1].(string)
+	if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
+		inner := extractFromArrayString(pattern)
+		return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
+	}
 	return column, pattern
 }
 
@@ -414,65 +439,59 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 	// Basic String Pattern Matching Operators
 	// ========================================================================
 
-	// startsWith operator is basically column LIKE 'value%'.
-	// args[0] is the column name (SQL), args[1] is the pattern (already quoted SQL string).
+	// startsWith operator: column LIKE 'value%'.
 	_ = transpiler.RegisterOperatorFunc("startsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", false), nil
 	})
 
-	// !startsWith operator is basically column NOT LIKE 'value%'.
+	// !startsWith operator: column NOT LIKE 'value%'.
 	_ = transpiler.RegisterOperatorFunc("!startsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s NOT LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", true), nil
 	})
 
-	// endsWith operator is basically column LIKE '%value'.
+	// endsWith operator: column LIKE '%value'.
 	_ = transpiler.RegisterOperatorFunc("endsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", false), nil
 	})
 
-	// !endsWith operator is basically column NOT LIKE '%value'.
+	// !endsWith operator: column NOT LIKE '%value'.
 	_ = transpiler.RegisterOperatorFunc("!endsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s NOT LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", true), nil
 	})
 
-	// contains operator is basically column LIKE '%value%'.
-	// Supports: {"contains": [{"var": "field"}, "T"]} or {"contains": [{"var": "field"}, ["T"]]}.
-	// Also handles reversed: {"contains": ["T", {"var": "field"}]}.
+	// contains operator: column LIKE '%value%'.
+	// Supports reversed args: {"contains": ["T", {"var": "field"}]}.
 	_ = transpiler.RegisterOperatorFunc("contains", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return fmt.Sprintf("%s LIKE '%%%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, pattern, "%", "%", false), nil
 	})
 
-	// !contains operator is basically column NOT LIKE '%value%'.
+	// !contains operator: column NOT LIKE '%value%'.
 	_ = transpiler.RegisterOperatorFunc("!contains", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return fmt.Sprintf("%s NOT LIKE '%%%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, pattern, "%", "%", true), nil
 	})
 
 	// ========================================================================

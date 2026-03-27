@@ -677,6 +677,9 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 			if err == nil {
 				return pc.Add(n), nil
 			}
+			// Integer overflows int64; store as string to preserve full precision.
+			// Database drivers handle the conversion to their native big-integer type.
+			return pc.Add(trimmed), nil
 		}
 		if num, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
 			return pc.Add(num), nil
