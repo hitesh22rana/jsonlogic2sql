@@ -526,24 +526,20 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 		return fmt.Sprintf("%s IN (%s)", leftSQL, strings.Join(values, ", ")), nil
 	}
 
-	// Check if right side is a string (string containment)
 	if str, ok := rightValue.(string); ok {
-		// Use POSITION function for string containment: POSITION(left IN right) > 0
 		rightSQL, err := c.dataOp.valueToSQL(str)
 		if err != nil {
 			return "", fmt.Errorf("invalid string in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
-	// Check if right side is a number (convert to string for containment)
 	if num, ok := rightValue.(float64); ok {
-		// Convert number to string for containment check
 		rightSQL, err := c.dataOp.valueToSQL(num)
 		if err != nil {
 			return "", fmt.Errorf("invalid number in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
 	return "", fmt.Errorf("in operator requires array, variable, string, or number as second argument")
@@ -1019,7 +1015,7 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 		if err != nil {
 			return "", fmt.Errorf("invalid string in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
 	if num, ok := rightValue.(float64); ok {
@@ -1027,7 +1023,7 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 		if err != nil {
 			return "", fmt.Errorf("invalid number in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
 	return "", fmt.Errorf("in operator requires array, variable, string, or number as second argument")

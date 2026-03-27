@@ -54,10 +54,22 @@ func isSQLStringLiteral(s string) bool {
 	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
 }
 
+// escapeLikeExpr wraps a SQL expression with REPLACE calls that escape
+// LIKE metacharacters (%, _) at query execution time. This ensures bind
+// parameter values containing these characters are treated as literals,
+// matching the escaping applied in the non-parameterized inline path.
+func escapeLikeExpr(expr string) string {
+	return fmt.Sprintf(
+		"REPLACE(REPLACE(REPLACE(%s, '\\\\', '\\\\\\\\'), '%%', '\\%%'), '_', '\\_')",
+		expr,
+	)
+}
+
 // buildLikeSQL builds a LIKE/NOT LIKE expression.
 // When the pattern argument is a SQL string literal (non-parameterized mode),
 // it inlines the pattern. Otherwise (parameterized mode), it uses CONCAT
-// so that bind placeholders remain outside string literals.
+// with SQL-level REPLACE escaping so that bind parameter values containing
+// LIKE metacharacters (%, _) are treated as literals.
 func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string {
 	keyword := "LIKE"
 	if negate {
@@ -68,11 +80,13 @@ func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string
 		return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(raw), suffix)
 	}
 	// patternArg is a SQL expression (placeholder or column ref): use CONCAT
+	// with REPLACE-based escaping of LIKE wildcards in the bound value.
+	escaped := escapeLikeExpr(patternArg)
 	parts := make([]string, 0, 3)
 	if prefix != "" {
 		parts = append(parts, fmt.Sprintf("'%s'", prefix))
 	}
-	parts = append(parts, patternArg)
+	parts = append(parts, escaped)
 	if suffix != "" {
 		parts = append(parts, fmt.Sprintf("'%s'", suffix))
 	}
