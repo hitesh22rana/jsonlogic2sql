@@ -124,6 +124,10 @@ func placeholderRefPattern(index int, name string, style PlaceholderStyle) *rege
 	case PlaceholderPositional:
 		return regexp.MustCompile(`(?:^|[^A-Za-z0-9_$])\$` + strconv.Itoa(index) + `(?:[^A-Za-z0-9_]|$)`)
 	case PlaceholderQuestion:
+		// NOTE: PlaceholderQuestion uses identical "?" for every parameter, so this
+		// per-parameter check cannot detect under-referenced placeholders (e.g., 3 params
+		// but only 2 "?" in the SQL). This is acceptable because PlaceholderQuestion is
+		// reserved for future opt-in and no dialect currently maps to it.
 		return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))
 	}
 	return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))

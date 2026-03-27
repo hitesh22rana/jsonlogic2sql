@@ -35,7 +35,7 @@ type Parser struct {
 }
 
 // NewParser creates a new parser instance with config.
-// Config must not be nil and must have a valid dialect set.
+// If config is nil, defaults to BigQuery dialect for backward compatibility.
 func NewParser(config *operators.OperatorConfig) *Parser {
 	if config == nil {
 		// Default to BigQuery for backward compatibility in internal usage
