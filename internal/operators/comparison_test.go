@@ -1892,11 +1892,7 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 
 	t.Run("array type var on right uses arrayMembershipSQL", func(t *testing.T) {
 		pc := params.NewParamCollector(params.PlaceholderNamed)
-		leftSQL, err := op.valueToSQLParam("needle", pc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := op.handleInParam(leftSQL, map[string]interface{}{"var": "tags"}, "needle", pc)
+		got, err := op.handleInParam("needle", map[string]interface{}{"var": "tags"}, pc)
 		if err != nil {
 			t.Fatalf("handleInParam() error = %v", err)
 		}
@@ -1909,11 +1905,7 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 
 	t.Run("string type var on right uses strposFunc with parameterized left", func(t *testing.T) {
 		pc := params.NewParamCollector(params.PlaceholderNamed)
-		leftSQL, err := op.valueToSQLParam("probe", pc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := op.handleInParam(leftSQL, map[string]interface{}{"var": "description"}, "probe", pc)
+		got, err := op.handleInParam("probe", map[string]interface{}{"var": "description"}, pc)
 		if err != nil {
 			t.Fatalf("handleInParam() error = %v", err)
 		}
@@ -1926,11 +1918,8 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 
 	t.Run("array of literals parameterized", func(t *testing.T) {
 		pc := params.NewParamCollector(params.PlaceholderNamed)
-		leftSQL, err := op.valueToSQLParam(map[string]interface{}{"var": "region"}, pc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := op.handleInParam(leftSQL, []interface{}{"EU", "APAC", "US"}, map[string]interface{}{"var": "region"}, pc)
+		leftOriginal := map[string]interface{}{"var": "region"}
+		got, err := op.handleInParam(leftOriginal, []interface{}{"EU", "APAC", "US"}, pc)
 		if err != nil {
 			t.Fatalf("handleInParam() error = %v", err)
 		}
@@ -1943,6 +1932,39 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 			{Name: "p2", Value: "APAC"},
 			{Name: "p3", Value: "US"},
 		})
+	})
+
+	t.Run("string containment without schema", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := noSchemaOp.handleInParam("foo", map[string]interface{}{"var": "bar"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(bar, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		assertQueryParams(t, pc.Params(), []params.QueryParam{{Name: "p1", Value: "foo"}})
+	})
+
+	t.Run("schema coercion for string field", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := op.handleInParam(float64(123), map[string]interface{}{"var": "description"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(description, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		if len(pc.Params()) != 1 {
+			t.Fatalf("expected 1 param, got %d: %v", len(pc.Params()), pc.Params())
+		}
+		if pc.Params()[0].Value != "123" {
+			t.Errorf("param value = %v (%T), want string \"123\"", pc.Params()[0].Value, pc.Params()[0].Value)
+		}
 	})
 }
 

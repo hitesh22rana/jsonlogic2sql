@@ -613,6 +613,95 @@ func TestTranspileParameterized_LargeIntegerPrecision(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_InStringContainment(t *testing.T) {
+	tests := []struct {
+		name       string
+		dialect    Dialect
+		jsonLogic  string
+		wantSQL    string
+		wantParams []QueryParam
+	}{
+		{
+			name:       "string in var without schema (BigQuery)",
+			dialect:    DialectBigQuery,
+			jsonLogic:  `{"in": ["foo", {"var": "bar"}]}`,
+			wantSQL:    "WHERE STRPOS(bar, @p1) > 0",
+			wantParams: []QueryParam{{Name: "p1", Value: "foo"}},
+		},
+		{
+			name:       "string in var without schema (PostgreSQL)",
+			dialect:    DialectPostgreSQL,
+			jsonLogic:  `{"in": ["foo", {"var": "bar"}]}`,
+			wantSQL:    "WHERE POSITION($1 IN bar) > 0",
+			wantParams: []QueryParam{{Name: "p1", Value: "foo"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			gotSQL, gotParams, err := tp.TranspileParameterized(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Errorf("SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+			assertParams(t, gotParams, tt.wantParams)
+		})
+	}
+}
+
+func TestTranspileParameterized_InSchemaCoercion(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "name", Type: FieldTypeString},
+		{Name: "tags", Type: FieldTypeArray},
+	})
+
+	tests := []struct {
+		name       string
+		jsonLogic  string
+		wantSQL    string
+		wantParams []QueryParam
+	}{
+		{
+			name:       "numeric coerced to string for string field",
+			jsonLogic:  `{"in": [123, {"var": "name"}]}`,
+			wantSQL:    "WHERE STRPOS(name, @p1) > 0",
+			wantParams: []QueryParam{{Name: "p1", Value: "123"}},
+		},
+		{
+			name:       "string in array field uses UNNEST",
+			jsonLogic:  `{"in": ["x", {"var": "tags"}]}`,
+			wantSQL:    "WHERE @p1 IN UNNEST(tags)",
+			wantParams: []QueryParam{{Name: "p1", Value: "x"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect: DialectBigQuery,
+				Schema:  schema,
+			})
+			if err != nil {
+				t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+			}
+			gotSQL, gotParams, err := tp.TranspileParameterized(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Errorf("SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+			assertParams(t, gotParams, tt.wantParams)
+		})
+	}
+}
+
 func assertParams(t *testing.T, got, want []QueryParam) {
 	t.Helper()
 	if len(got) != len(want) {
