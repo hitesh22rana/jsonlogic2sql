@@ -298,7 +298,13 @@
                             paramStr = '  [' + params.map(p => p.Name + '=' + JSON.stringify(p.Value)).join(', ') + ']';
                         }
                     } catch (_) {}
-                    sql.innerHTML = result.sql + '<span style="color: #d2a8ff; opacity: 0.7;">' + paramStr + '</span>';
+                    sql.textContent = result.sql;
+                    if (paramStr) {
+                        const paramSpan = document.createElement('span');
+                        paramSpan.style.cssText = 'color: #d2a8ff; opacity: 0.7;';
+                        paramSpan.textContent = paramStr;
+                        sql.appendChild(paramSpan);
+                    }
                 } else {
                     sql.textContent = result.sql;
                 }

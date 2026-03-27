@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql"
@@ -96,6 +97,21 @@ func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string
 	return fmt.Sprintf("%s %s CONCAT(%s)", column, keyword, strings.Join(parts, ", "))
 }
 
+// placeholderRe matches bind-parameter placeholders across all supported dialects:
+// @p1, @p2, ... (BigQuery, Spanner, ClickHouse) and $1, $2, ... (PostgreSQL, DuckDB).
+var placeholderRe = regexp.MustCompile(`^(?:@p\d+|\$\d+)$`)
+
+// isPlaceholder reports whether s looks like a bind-parameter placeholder.
+func isPlaceholder(s string) bool {
+	return placeholderRe.MatchString(s)
+}
+
+// isBoundValue reports whether s is a SQL string literal or a bind placeholder.
+// Used to distinguish "value" arguments from column identifiers in custom operators.
+func isBoundValue(s string) bool {
+	return isSQLStringLiteral(s) || isPlaceholder(s)
+}
+
 // parseContainsArgs parses the arguments for contains/!contains operators.
 // Returns the column and the raw pattern argument (preserving SQL quoting
 // so that buildLikeSQL can distinguish literals from placeholders).
@@ -114,7 +130,7 @@ func parseContainsArgs(args []interface{}) (column, pattern string) {
 			inner := extractFromArrayString(arg0Str)
 			return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
 		}
-		if isSQLStringLiteral(arg0Str) && !isSQLStringLiteral(arg1Str) {
+		if isBoundValue(arg0Str) && !isBoundValue(arg1Str) {
 			return arg1Str, arg0Str
 		}
 		return arg0Str, arg1Str
