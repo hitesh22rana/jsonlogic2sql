@@ -79,6 +79,15 @@ SQL: WHERE (status = 'active' AND amount > 1000)
 
 Placeholder styles vary by dialect (`@p1` for BigQuery/Spanner/ClickHouse, `$1` for PostgreSQL/DuckDB). See [Parameterized Queries](parameterized-queries.md) for details.
 
+### Pattern-Matching Note (`LIKE`)
+
+In parameterized mode, pattern operators (for example `startsWith`, `endsWith`, `contains`) must keep placeholders outside string literals.
+
+- Correct: `LIKE CONCAT(@p1, '%')`
+- Incorrect: `LIKE '@p1%'`
+
+The correct form preserves bind semantics; the incorrect form treats the placeholder text as a literal string.
+
 ## Large JSON Input
 
 For JSON Logic expressions larger than terminal line limits (~4KB), use the `:file` command:

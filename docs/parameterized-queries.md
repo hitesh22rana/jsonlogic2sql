@@ -60,6 +60,30 @@ sql, params, _ := jsonlogic2sql.TranspileParameterized(
 
 NULL and boolean values remain inline because they are structural SQL tokens used in `IS NULL`, `IS TRUE` patterns, not user-supplied data.
 
+## LIKE Patterns with Parameters
+
+When building `LIKE` patterns in parameterized mode, placeholders must stay as SQL expressions, not string literals.
+
+Correct pattern construction:
+
+```sql
+WHERE name LIKE CONCAT(@p1, '%')
+```
+
+Incorrect pattern construction:
+
+```sql
+WHERE name LIKE '@p1%'
+```
+
+Why this matters:
+- `CONCAT(@p1, '%')` keeps `@p1` as a bind parameter and appends `%` safely in SQL.
+- `'@p1%'` turns the placeholder into a plain string literal, so no binding occurs for that pattern value.
+
+The same rule applies to positional styles:
+- PostgreSQL/DuckDB: `LIKE CONCAT($1, '%')`
+- Prefix/suffix patterns: `LIKE CONCAT('%', @p1, '%')`, `LIKE CONCAT('%', $1)`
+
 ## API Reference
 
 ### Transpiler Methods
