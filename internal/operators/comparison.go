@@ -2,7 +2,6 @@ package operators
 
 import (
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -756,11 +755,7 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 	}
 
 	if operator == "in" {
-		leftSQL, err := c.valueToSQLParam(args[0], pc)
-		if err != nil {
-			return "", fmt.Errorf("invalid left operand: %w", err)
-		}
-		return c.handleInParam(leftSQL, args[1], args[0], pc)
+		return c.handleInParam(args[0], args[1], pc)
 	}
 
 	leftArg := args[0]
@@ -921,7 +916,12 @@ func (c *ComparisonOperator) valueToSQLParam(value interface{}, pc *params.Param
 }
 
 // handleInParam is the parameterized variant of handleIn. Keep in sync.
-func (c *ComparisonOperator) handleInParam(leftSQL string, rightValue, leftOriginal interface{}, pc *params.ParamCollector) (string, error) {
+//
+// Unlike handleIn, leftSQL is NOT pre-generated. This method generates the
+// placeholder for the left operand after determining whether coercion is needed
+// (P2 fix) and uses the original value's Go type rather than SQL quoting to
+// distinguish string containment from array membership (P1 fix).
+func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{}, pc *params.ParamCollector) (string, error) {
 	leftFieldName := c.extractFieldNameFromValue(leftOriginal)
 
 	if varExpr, ok := rightValue.(map[string]interface{}); ok {
@@ -942,29 +942,45 @@ func (c *ComparisonOperator) handleInParam(leftSQL string, rightValue, leftOrigi
 
 			if c.schema() != nil && fieldName != "" {
 				if c.schema().IsArrayType(fieldName) {
+					leftSQL, lErr := c.valueToSQLParam(leftOriginal, pc)
+					if lErr != nil {
+						return "", fmt.Errorf("invalid left operand: %w", lErr)
+					}
 					return c.arrayMembershipSQL(leftSQL, rightSQL), nil
 				} else if c.schema().IsStringType(fieldName) {
 					coercedLeft := c.coerceValueForComparison(leftOriginal, fieldName)
-					var coercedLeftSQL string
-					var err error
-					if reflect.DeepEqual(coercedLeft, leftOriginal) {
-						coercedLeftSQL = leftSQL
-					} else {
-						coercedLeftSQL, err = c.valueToSQLParam(coercedLeft, pc)
-						if err != nil {
-							return "", fmt.Errorf("invalid left operand after coercion: %w", err)
-						}
+					coercedLeftSQL, lErr := c.valueToSQLParam(coercedLeft, pc)
+					if lErr != nil {
+						return "", fmt.Errorf("invalid left operand after coercion: %w", lErr)
 					}
 					return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, coercedLeftSQL)), nil
 				}
 			}
 
-			isLeftLiteral := strings.HasPrefix(leftSQL, "'") && strings.HasSuffix(leftSQL, "'")
-			if isLeftLiteral {
+			// No schema: infer from the Go type of the original left value.
+			// Strings indicate string-containment; everything else is array membership.
+			_, isLeftString := leftOriginal.(string)
+			if !isLeftString {
+				if pv, ok := leftOriginal.(ProcessedValue); ok && !pv.IsSQL {
+					isLeftString = true
+				}
+			}
+
+			leftSQL, err := c.valueToSQLParam(leftOriginal, pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid left operand: %w", err)
+			}
+			if isLeftString {
 				return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 			}
 			return c.arrayMembershipSQL(leftSQL, rightSQL), nil
 		}
+	}
+
+	// Generate leftSQL for all remaining paths (array, string, number on right side).
+	leftSQL, err := c.valueToSQLParam(leftOriginal, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid left operand: %w", err)
 	}
 
 	if arr, ok := rightValue.([]interface{}); ok {
