@@ -123,11 +123,15 @@ type QueryParam struct {
 | JSONLogic Input | `Value` Go Type | Notes |
 |-----------------|-----------------|-------|
 | `"hello"` | `string` | |
-| `42` | `float64` | JSON numbers are float64 in Go |
+| `42` | `float64` | JS-safe integers (within ±2^53−1) |
+| `3.14` | `float64` | Floating-point numbers |
+| `9223372036854775808` | `string` | Unquoted integers exceeding ±2^53−1 are preserved as exact strings via `json.Decoder.UseNumber` |
 | Coerced integer (schema) | `int64` | Schema coerces `"50000"` → `int64(50000)` for integer fields |
 | `true` / `false` | — | Not parameterized (inline `TRUE`/`FALSE`) |
 | `null` | — | Not parameterized (inline `NULL`) |
-| Integer string `> int64` range | `string` | e.g., `"9223372036854775808"` is stored as string for `database/sql` driver compatibility; callers may need to convert to their driver's numeric type |
+| Integer string `> int64` range | `string` | Quoted string inputs like `"9223372036854775808"` also preserved as string |
+
+> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve full precision for large integer literals. This means unquoted integers like `9223372036854775808` in your JSON input produce exact SQL (`amount >= 9223372036854775808`) instead of lossy float64 representations. Callers binding large integer string params may need to convert them to their driver's numeric type.
 
 ## Schema Coercion
 

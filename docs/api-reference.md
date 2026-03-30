@@ -299,7 +299,7 @@ type QueryParam struct {
 }
 ```
 
-> **Note:** Integer strings that overflow `int64` (e.g., `"9223372036854775808"`) are stored as `string` for `database/sql` driver compatibility. Callers binding such values may need to convert them to their driver's appropriate numeric type.
+> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve precision. JS-safe integers (within ±2^53−1) bind as `float64`; larger integers (both unquoted JSON literals and quoted strings exceeding `int64`) bind as `string`. Callers binding large integer params may need to convert them to their driver's numeric type.
 
 ### TranspileError
 
