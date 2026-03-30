@@ -15,6 +15,11 @@ import (
 // for nested field access: letters, digits, underscores, and dots.
 var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 
+// validJSONNumberLiteral matches strict JSON numeric literals.
+// This prevents crafted json.Number values (from map/interface APIs) from being
+// inlined as arbitrary SQL fragments.
+var validJSONNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
 // DataOperator handles data access operators (var, missing, missing_some).
 type DataOperator struct {
 	config *OperatorConfig
@@ -317,7 +322,11 @@ func (d *DataOperator) valueToSQL(value interface{}) (string, error) {
 		escaped := strings.ReplaceAll(v, "'", "''")
 		return fmt.Sprintf("'%s'", escaped), nil
 	case json.Number:
-		return v.String(), nil
+		numberLiteral, err := normalizeJSONNumberLiteral(v)
+		if err != nil {
+			return "", err
+		}
+		return numberLiteral, nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return fmt.Sprintf("%v", v), nil
 	case float32, float64:
@@ -483,6 +492,9 @@ func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollec
 	case string:
 		return pc.Add(v), nil
 	case json.Number:
+		if _, err := normalizeJSONNumberLiteral(v); err != nil {
+			return "", err
+		}
 		return pc.Add(jsonNumberParamValue(v)), nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return pc.Add(v), nil
@@ -524,6 +536,16 @@ func jsonNumberParamValue(num json.Number) interface{} {
 		return f
 	}
 	return numStr
+}
+
+// normalizeJSONNumberLiteral validates json.Number text and returns the literal
+// for safe SQL emission.
+func normalizeJSONNumberLiteral(num json.Number) (string, error) {
+	numStr := num.String()
+	if !validJSONNumberLiteral.MatchString(numStr) {
+		return "", fmt.Errorf("invalid json number literal: %q", numStr)
+	}
+	return numStr, nil
 }
 
 // hasNonZeroSignificand reports whether a numeric string has a non-zero digit

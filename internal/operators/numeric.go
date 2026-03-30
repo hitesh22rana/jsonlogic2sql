@@ -328,7 +328,11 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 		return n.dataOp.valueToSQL(str)
 	}
 	if num, ok := value.(json.Number); ok {
-		return num.String(), nil
+		numberLiteral, err := normalizeJSONNumberLiteral(num)
+		if err != nil {
+			return "", err
+		}
+		return numberLiteral, nil
 	}
 
 	// Handle var expressions and complex expressions
@@ -693,6 +697,9 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 		return n.dataOp.valueToSQLParam(str, pc)
 	}
 	if num, ok := value.(json.Number); ok {
+		if _, err := normalizeJSONNumberLiteral(num); err != nil {
+			return "", err
+		}
 		return pc.Add(jsonNumberParamValue(num)), nil
 	}
 
