@@ -1966,6 +1966,81 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 			t.Errorf("param value = %v (%T), want string \"123\"", pc.Params()[0].Value, pc.Params()[0].Value)
 		}
 	})
+
+	t.Run("ProcessedValue SQL literal treated as string containment", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "'foo'"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(col, 'foo') > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue placeholder for string param uses string containment", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add("hello") // @p1 = "hello" (string)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "@p1"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(col, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue placeholder for numeric param uses array membership", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add(float64(42)) // @p1 = 42 (numeric)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "@p1"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "@p1 IN UNNEST(col)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue SQL expression uses array membership", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add("hello") // @p1 = "hello"
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "LOWER(@p1)"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "LOWER(@p1) IN UNNEST(col)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestComparisonOperator_processArithmeticExpressionParam(t *testing.T) {

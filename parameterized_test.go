@@ -707,6 +707,26 @@ func TestTranspileParameterized_InSchemaCoercion(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_InCustomOperatorPlaceholder(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	_ = tp.RegisterOperatorFunc("identity", func(_ string, args []any) (string, error) {
+		return fmt.Sprintf("%s", args[0]), nil
+	})
+
+	gotSQL, gotParams, err := tp.TranspileParameterized(`{"in": [{"identity": ["hello"]}, {"var": "col"}]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	wantSQL := "WHERE STRPOS(col, @p1) > 0"
+	if gotSQL != wantSQL {
+		t.Errorf("SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: "hello"}})
+}
+
 func assertParams(t *testing.T, got, want []QueryParam) {
 	t.Helper()
 	if len(got) != len(want) {

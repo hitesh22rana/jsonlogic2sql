@@ -296,3 +296,43 @@ func TestValidatePlaceholderRefsCommentFalsePositive(t *testing.T) {
 		t.Errorf("KNOWN_LIMITATION: expected no error (false negative), got: %v", err)
 	}
 }
+
+func TestValueForPlaceholder(t *testing.T) {
+	t.Run("named style", func(t *testing.T) {
+		pc := NewParamCollector(PlaceholderNamed)
+		pc.Add("hello")
+		pc.Add(float64(42))
+
+		val, ok := pc.ValueForPlaceholder("@p1")
+		if !ok || val != "hello" {
+			t.Errorf("ValueForPlaceholder(@p1) = %v, %v; want hello, true", val, ok)
+		}
+		val, ok = pc.ValueForPlaceholder("@p2")
+		if !ok || val != float64(42) {
+			t.Errorf("ValueForPlaceholder(@p2) = %v, %v; want 42, true", val, ok)
+		}
+		_, ok = pc.ValueForPlaceholder("@p3")
+		if ok {
+			t.Error("ValueForPlaceholder(@p3) should return false for missing placeholder")
+		}
+	})
+
+	t.Run("positional style", func(t *testing.T) {
+		pc := NewParamCollector(PlaceholderPositional)
+		pc.Add("world")
+		pc.Add(true)
+
+		val, ok := pc.ValueForPlaceholder("$1")
+		if !ok || val != "world" {
+			t.Errorf("ValueForPlaceholder($1) = %v, %v; want world, true", val, ok)
+		}
+		val, ok = pc.ValueForPlaceholder("$2")
+		if !ok || val != true {
+			t.Errorf("ValueForPlaceholder($2) = %v, %v; want true, true", val, ok)
+		}
+		_, ok = pc.ValueForPlaceholder("@p1")
+		if ok {
+			t.Error("ValueForPlaceholder(@p1) should not match positional style")
+		}
+	})
+}
