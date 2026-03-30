@@ -955,10 +955,16 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 
 			// No schema: infer from the Go type of the original left value.
 			// Strings indicate string-containment; everything else is array membership.
+			// For ProcessedValue{IsSQL:true} from custom operators, mirror the
+			// non-param heuristic: treat SQL string literals ('...') as strings.
 			_, isLeftString := leftOriginal.(string)
 			if !isLeftString {
-				if pv, ok := leftOriginal.(ProcessedValue); ok && !pv.IsSQL {
-					isLeftString = true
+				if pv, ok := leftOriginal.(ProcessedValue); ok {
+					if !pv.IsSQL {
+						isLeftString = true
+					} else {
+						isLeftString = strings.HasPrefix(pv.Value, "'") && strings.HasSuffix(pv.Value, "'")
+					}
 				}
 			}
 

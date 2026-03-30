@@ -3,7 +3,6 @@ package operators
 import (
 	"fmt"
 	"math"
-	"math/big"
 	"strconv"
 	"strings"
 
@@ -678,13 +677,10 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 			if err == nil {
 				return pc.Add(n), nil
 			}
-			// Integer overflows int64; use *big.Int so database drivers bind it as
-			// a numeric type rather than text (which would fail in arithmetic/comparison
-			// contexts on strictly-typed dialects like BigQuery/PostgreSQL).
-			bi, ok := new(big.Int).SetString(trimmed, 10)
-			if ok {
-				return pc.Add(bi), nil
-			}
+			// Integer overflows int64; store as string to preserve full precision.
+			// *big.Int is not used because database/sql's defaultConverter rejects
+			// it (unsupported type). Callers binding large integers should convert
+			// the string to their driver's appropriate numeric type.
 			return pc.Add(trimmed), nil
 		}
 		if num, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
