@@ -336,3 +336,66 @@ func TestValueForPlaceholder(t *testing.T) {
 		}
 	})
 }
+
+func TestFindQuotedPlaceholderRef(t *testing.T) {
+	t.Run("named placeholder inside quoted literal is detected", func(t *testing.T) {
+		sql := "WHERE x = '@p1' AND y = @p2"
+		params := []QueryParam{
+			{Name: "p1", Value: "a"},
+			{Name: "p2", Value: "b"},
+		}
+		got, ok := FindQuotedPlaceholderRef(sql, params, PlaceholderNamed)
+		if !ok {
+			t.Fatal("expected quoted placeholder to be detected")
+		}
+		if got != "@p1" {
+			t.Fatalf("placeholder = %q, want %q", got, "@p1")
+		}
+	})
+
+	t.Run("positional placeholder inside quoted literal is detected", func(t *testing.T) {
+		sql := "WHERE x = '$1' AND y = $2"
+		params := []QueryParam{
+			{Name: "p1", Value: "a"},
+			{Name: "p2", Value: "b"},
+		}
+		got, ok := FindQuotedPlaceholderRef(sql, params, PlaceholderPositional)
+		if !ok {
+			t.Fatal("expected quoted placeholder to be detected")
+		}
+		if got != "$1" {
+			t.Fatalf("placeholder = %q, want %q", got, "$1")
+		}
+	})
+
+	t.Run("placeholder-like text as part of larger token is ignored", func(t *testing.T) {
+		sql := "WHERE email = 'name@p1.example' AND y = @p1"
+		params := []QueryParam{{Name: "p1", Value: "a"}}
+		if got, ok := FindQuotedPlaceholderRef(sql, params, PlaceholderNamed); ok {
+			t.Fatalf("unexpected placeholder match %q", got)
+		}
+	})
+
+	t.Run("escaped single quotes are handled", func(t *testing.T) {
+		sql := "WHERE msg = 'it''s @p1' AND x = @p1"
+		params := []QueryParam{{Name: "p1", Value: "a"}}
+		got, ok := FindQuotedPlaceholderRef(sql, params, PlaceholderNamed)
+		if !ok {
+			t.Fatal("expected quoted placeholder to be detected")
+		}
+		if got != "@p1" {
+			t.Fatalf("placeholder = %q, want %q", got, "@p1")
+		}
+	})
+
+	t.Run("no placeholders in quoted literals", func(t *testing.T) {
+		sql := "WHERE x = @p1 AND y = @p2"
+		params := []QueryParam{
+			{Name: "p1", Value: "a"},
+			{Name: "p2", Value: "b"},
+		}
+		if got, ok := FindQuotedPlaceholderRef(sql, params, PlaceholderNamed); ok {
+			t.Fatalf("unexpected placeholder match %q", got)
+		}
+	})
+}

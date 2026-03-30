@@ -856,6 +856,51 @@ func TestTranspileParameterized_InCustomOperatorPlaceholder(t *testing.T) {
 	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: "hello"}})
 }
 
+func TestTranspileParameterized_CustomOperatorQuotedPlaceholderRejected(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	_ = tp.RegisterOperatorFunc("quote", func(_ string, args []any) (string, error) {
+		return fmt.Sprintf("'%s'", args[0]), nil
+	})
+
+	_, _, err = tp.TranspileParameterized(`{"quote": ["hello"]}`)
+	if err == nil {
+		t.Fatal("expected error for quoted placeholder in custom operator SQL")
+	}
+	tpErr, ok := AsTranspileError(err)
+	if !ok {
+		t.Fatalf("expected TranspileError, got %T (%v)", err, err)
+	}
+	if tpErr.Code != ErrCustomOperatorFailed {
+		t.Fatalf("error code = %q, want %q", tpErr.Code, ErrCustomOperatorFailed)
+	}
+	if tpErr.Operator != "quote" {
+		t.Fatalf("operator = %q, want %q", tpErr.Operator, "quote")
+	}
+}
+
+func TestTranspileParameterized_CustomOperatorPlaceholderAsExpressionAllowed(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	_ = tp.RegisterOperatorFunc("prefix", func(_ string, args []any) (string, error) {
+		// Valid: placeholder is used as a SQL expression, not inside a quoted literal.
+		return fmt.Sprintf("CONCAT('x-', %s)", args[0]), nil
+	})
+
+	sql, params, err := tp.TranspileParameterized(`{"prefix": ["hello"]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if sql != "WHERE CONCAT('x-', @p1)" {
+		t.Fatalf("SQL = %q, want %q", sql, "WHERE CONCAT('x-', @p1)")
+	}
+	assertParams(t, params, []QueryParam{{Name: "p1", Value: "hello"}})
+}
+
 func assertParams(t *testing.T, got, want []QueryParam) {
 	t.Helper()
 	if len(got) != len(want) {
