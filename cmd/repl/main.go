@@ -681,7 +681,12 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			pattern := args[1].(string)
 			switch dialect {
 			case jsonlogic2sql.DialectBigQuery:
-				return fmt.Sprintf("REGEXP_CONTAINS(%s, r%s)", str, pattern), nil
+				// BigQuery raw string prefix (r'...') is only valid for literals.
+				// Placeholders/expressions must be passed without the raw prefix.
+				if isSQLStringLiteral(pattern) {
+					return fmt.Sprintf("REGEXP_CONTAINS(%s, r%s)", str, pattern), nil
+				}
+				return fmt.Sprintf("REGEXP_CONTAINS(%s, %s)", str, pattern), nil
 			case jsonlogic2sql.DialectSpanner:
 				return fmt.Sprintf("REGEXP_CONTAINS(%s, %s)", str, pattern), nil
 			case jsonlogic2sql.DialectPostgreSQL:

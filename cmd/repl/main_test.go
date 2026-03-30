@@ -765,3 +765,42 @@ func TestContainsReversedArgsParameterized(t *testing.T) {
 		})
 	}
 }
+
+func TestRegexpContainsBigQuery_NonParameterized(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	sql, err := tr.Transpile(`{"regexpContains": [{"var": "email"}, "^foo.*bar$"]}`)
+	if err != nil {
+		t.Fatalf("Transpile error: %v", err)
+	}
+
+	want := "WHERE REGEXP_CONTAINS(email, r'^foo.*bar$')"
+	if sql != want {
+		t.Errorf("SQL:\n  got:  %s\n  want: %s", sql, want)
+	}
+}
+
+func TestRegexpContainsBigQuery_Parameterized(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	sql, params, err := tr.TranspileParameterized(`{"regexpContains": [{"var": "email"}, "^foo.*bar$"]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized error: %v", err)
+	}
+
+	wantSQL := "WHERE REGEXP_CONTAINS(email, @p1)"
+	if sql != wantSQL {
+		t.Errorf("SQL:\n  got:  %s\n  want: %s", sql, wantSQL)
+	}
+	wantParams := []jsonlogic2sql.QueryParam{
+		{Name: "p1", Value: "^foo.*bar$"},
+	}
+	if len(params) != len(wantParams) {
+		t.Fatalf("Params length: got %d, want %d", len(params), len(wantParams))
+	}
+	for i, want := range wantParams {
+		if params[i].Name != want.Name || fmt.Sprintf("%v", params[i].Value) != fmt.Sprintf("%v", want.Value) {
+			t.Errorf("Param[%d]: got {%s %v}, want {%s %v}", i, params[i].Name, params[i].Value, want.Name, want.Value)
+		}
+	}
+}
