@@ -1576,6 +1576,44 @@ func TestNewTranspilerWithConfig_WithSchema(t *testing.T) {
 	}
 }
 
+func TestNewTranspilerWithConfig_NilSchemaPointer_UsesNoSchemaValidation(t *testing.T) {
+	var nilSchema *Schema
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect: DialectBigQuery,
+		Schema:  nilSchema,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() unexpected error: %v", err)
+	}
+
+	_, err = tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`)
+	if err == nil {
+		t.Fatal("expected invalid identifier error with nil schema")
+	}
+}
+
+func TestTranspiler_SetSchema_NilRestoresIdentifierValidation(t *testing.T) {
+	tr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() unexpected error: %v", err)
+	}
+
+	// With schema set, unusual names are allowed and validated by schema.
+	tr.SetSchema(NewSchema([]FieldSchema{
+		{Name: "bad field", Type: FieldTypeNumber},
+	}))
+
+	if _, err := tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`); err != nil {
+		t.Fatalf("Transpile() with schema unexpected error: %v", err)
+	}
+
+	// Clearing schema should restore no-schema identifier safety checks.
+	tr.SetSchema(nil)
+	if _, err := tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`); err == nil {
+		t.Fatal("expected invalid identifier error after SetSchema(nil)")
+	}
+}
+
 func TestTranspiler_GetDialect(t *testing.T) {
 	tests := []struct {
 		name    string

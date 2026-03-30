@@ -36,10 +36,22 @@ type Transpiler struct {
 	customOperators *OperatorRegistry
 }
 
+// schemaProvider returns a nil interface when schema is nil, avoiding typed-nil
+// interface values that can bypass no-schema identifier validation.
+func schemaProvider(schema *Schema) operators.SchemaProvider {
+	if schema == nil {
+		return nil
+	}
+	return schema
+}
+
 // SetSchema sets the schema for field validation and type checking
 // This is optional - if not set, no schema validation will be performed.
 func (t *Transpiler) SetSchema(schema *Schema) {
-	t.operatorConfig.Schema = schema
+	t.operatorConfig.Schema = schemaProvider(schema)
+	if t.config != nil {
+		t.config.Schema = schema
+	}
 	// All operators automatically see the new schema through the shared config
 }
 
@@ -73,7 +85,7 @@ func NewTranspilerWithConfig(config *TranspilerConfig) (*Transpiler, error) {
 		return nil, err
 	}
 
-	opConfig := operators.NewOperatorConfig(config.Dialect, config.Schema)
+	opConfig := operators.NewOperatorConfig(config.Dialect, schemaProvider(config.Schema))
 	t := &Transpiler{
 		parser:          parser.NewParser(opConfig),
 		operatorConfig:  opConfig,
