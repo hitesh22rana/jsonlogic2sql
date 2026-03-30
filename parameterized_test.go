@@ -3,7 +3,6 @@ package jsonlogic2sql
 import (
 	"errors"
 	"fmt"
-	"math/big"
 	"reflect"
 	"testing"
 )
@@ -176,11 +175,11 @@ func TestTranspileParameterized_Numeric(t *testing.T) {
 			wantParams: []QueryParam{{Name: "p1", Value: float64(100)}},
 		},
 		{
-			name:      "large integer string preserved as big.Int",
+			name:      "large integer string preserved as string",
 			jsonLogic: `{"*": ["9223372036854775808", 2]}`,
 			wantSQL:   "WHERE (@p1 * @p2)",
 			wantParams: []QueryParam{
-				{Name: "p1", Value: newTestBigInt("9223372036854775808")},
+				{Name: "p1", Value: "9223372036854775808"},
 				{Name: "p2", Value: float64(2)},
 			},
 		},
@@ -607,12 +606,12 @@ func TestTranspileParameterized_LargeIntegerPrecision(t *testing.T) {
 	if len(params) != 2 {
 		t.Fatalf("expected 2 params, got %d", len(params))
 	}
-	bi, ok := params[0].Value.(*big.Int)
+	str, ok := params[0].Value.(string)
 	if !ok {
-		t.Fatalf("param[0].Value type = %T, want *big.Int", params[0].Value)
+		t.Fatalf("param[0].Value type = %T, want string", params[0].Value)
 	}
-	if bi.String() != "9223372036854775808" {
-		t.Errorf("param[0].Value = %s, want 9223372036854775808", bi.String())
+	if str != "9223372036854775808" {
+		t.Errorf("param[0].Value = %s, want 9223372036854775808", str)
 	}
 	if params[1].Value != float64(2) {
 		t.Errorf("param[1].Value = %v (%T), want float64(2)", params[1].Value, params[1].Value)
@@ -722,9 +721,4 @@ func assertParams(t *testing.T, got, want []QueryParam) {
 			t.Errorf("param[%d].Value = %v (%T), want %v (%T)", i, got[i].Value, got[i].Value, want[i].Value, want[i].Value)
 		}
 	}
-}
-
-func newTestBigInt(s string) *big.Int {
-	bi, _ := new(big.Int).SetString(s, 10)
-	return bi
 }
