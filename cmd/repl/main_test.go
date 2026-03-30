@@ -766,6 +766,30 @@ func TestContainsReversedArgsParameterized(t *testing.T) {
 	}
 }
 
+func TestContainsArrayPatternParameterized(t *testing.T) {
+	tr := setupTestTranspiler(t)
+
+	// Non-param: array pattern ["x"] should produce the same LIKE as scalar "x"
+	sqlNonParam, err := tr.Transpile(`{"contains": [{"var": "col"}, ["x"]]}`)
+	if err != nil {
+		t.Fatalf("Transpile error: %v", err)
+	}
+	wantNonParam := "WHERE col LIKE '%x%'"
+	if sqlNonParam != wantNonParam {
+		t.Errorf("Non-param SQL:\n  got:  %s\n  want: %s", sqlNonParam, wantNonParam)
+	}
+
+	// Param: array pattern ["x"] should also produce valid LIKE, not bind a slice
+	sqlParam, _, err := tr.TranspileParameterized(`{"contains": [{"var": "col"}, ["x"]]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized error: %v", err)
+	}
+	wantParam := "WHERE col LIKE '%x%'"
+	if sqlParam != wantParam {
+		t.Errorf("Param SQL:\n  got:  %s\n  want: %s", sqlParam, wantParam)
+	}
+}
+
 func TestRegexpContainsBigQuery_NonParameterized(t *testing.T) {
 	tr := setupTestTranspiler(t)
 
