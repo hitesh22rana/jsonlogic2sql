@@ -1,10 +1,10 @@
 package jsonlogic2sql
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
@@ -261,7 +261,7 @@ func (t *Transpiler) TranspileCondition(jsonLogic string) (string, error) {
 // decodeJSONLogic decodes JSON using UseNumber so integer-like literals preserve
 // precision (e.g. 9223372036854775808) instead of being coerced to float64.
 func decodeJSONLogic(input string) (interface{}, error) {
-	dec := json.NewDecoder(bytes.NewBufferString(input))
+	dec := json.NewDecoder(strings.NewReader(input))
 	dec.UseNumber()
 
 	var logic interface{}

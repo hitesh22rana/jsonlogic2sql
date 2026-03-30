@@ -511,6 +511,9 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 
 		// Apply type coercion based on schema for array elements
 		if leftFieldName != "" && c.schema() != nil {
+			coerced := make([]interface{}, len(arr))
+			copy(coerced, arr)
+			arr = coerced
 			for i, item := range arr {
 				arr[i] = c.coerceValueForComparison(item, leftFieldName)
 			}
@@ -1014,6 +1017,9 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 		}
 
 		if leftFieldName != "" && c.schema() != nil {
+			coerced := make([]interface{}, len(arr))
+			copy(coerced, arr)
+			arr = coerced
 			for i, item := range arr {
 				arr[i] = c.coerceValueForComparison(item, leftFieldName)
 			}

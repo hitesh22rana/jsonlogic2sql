@@ -4,7 +4,6 @@ package params
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -118,15 +117,34 @@ func (pc *ParamCollector) ValueForPlaceholder(placeholder string) (interface{}, 
 // replaces all user-originated literals with placeholders.
 func ValidatePlaceholderRefs(sql string, params []QueryParam, style PlaceholderStyle) error {
 	for i, p := range params {
-		pattern := placeholderRefPattern(i+1, p.Name, style)
-		if !pattern.MatchString(sql) {
-			placeholder := formatPlaceholder(i+1, p.Name, style)
+		placeholder := formatPlaceholder(i+1, p.Name, style)
+		if !containsPlaceholderRef(sql, placeholder, style) {
 			return tperrors.New(tperrors.ErrUnreferencedPlaceholder, "", "",
 				fmt.Sprintf("placeholder %s (param %q) is not referenced in generated SQL; "+
 					"a custom operator may have dropped an argument", placeholder, p.Name))
 		}
 	}
 	return nil
+}
+
+func containsPlaceholderRef(sql, placeholder string, style PlaceholderStyle) bool {
+	if style == PlaceholderQuestion {
+		return strings.Contains(sql, placeholder)
+	}
+
+	searchFrom := 0
+	for {
+		idx := strings.Index(sql[searchFrom:], placeholder)
+		if idx < 0 {
+			return false
+		}
+		start := searchFrom + idx
+		end := start + len(placeholder)
+		if hasPlaceholderBoundaries(sql, start, end, style) {
+			return true
+		}
+		searchFrom = start + 1
+	}
 }
 
 // FindQuotedPlaceholderRef scans SQL string literals and returns the first
@@ -205,25 +223,6 @@ func isPlaceholderBoundaryChar(ch byte, style PlaceholderStyle) bool {
 		return true
 	}
 	return style == PlaceholderPositional && ch == '$'
-}
-
-// placeholderRefPattern builds a regex that matches a placeholder token with
-// strict token boundaries on both sides, avoiding partial matches like
-// @p1 inside @p10, or $1 inside $10.
-func placeholderRefPattern(index int, name string, style PlaceholderStyle) *regexp.Regexp {
-	switch style {
-	case PlaceholderNamed:
-		return regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@` + regexp.QuoteMeta(name) + `(?:[^A-Za-z0-9_]|$)`)
-	case PlaceholderPositional:
-		return regexp.MustCompile(`(?:^|[^A-Za-z0-9_$])\$` + strconv.Itoa(index) + `(?:[^A-Za-z0-9_]|$)`)
-	case PlaceholderQuestion:
-		// NOTE: PlaceholderQuestion uses identical "?" for every parameter, so this
-		// per-parameter check cannot detect under-referenced placeholders (e.g., 3 params
-		// but only 2 "?" in the SQL). This is acceptable because PlaceholderQuestion is
-		// reserved for future opt-in and no dialect currently maps to it.
-		return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))
-	}
-	return regexp.MustCompile(regexp.QuoteMeta(formatPlaceholder(index, name, style)))
 }
 
 // formatPlaceholder returns the placeholder string for a given index/name/style.
