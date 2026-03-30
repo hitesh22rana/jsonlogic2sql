@@ -2043,6 +2043,48 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 	})
 }
 
+func TestComparisonOperator_InDoesNotMutateInputArray(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"region": "string",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	t.Run("non-parameterized path", func(t *testing.T) {
+		arr := []interface{}{float64(1), float64(2)}
+		original := append([]interface{}(nil), arr...)
+
+		_, err := op.ToSQL("in", []interface{}{
+			map[string]interface{}{"var": "region"},
+			arr,
+		})
+		if err != nil {
+			t.Fatalf("ToSQL(in) unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(arr, original) {
+			t.Fatalf("input array mutated: got %#v, want %#v", arr, original)
+		}
+	})
+
+	t.Run("parameterized path", func(t *testing.T) {
+		arr := []interface{}{float64(1), float64(2)}
+		original := append([]interface{}(nil), arr...)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+
+		_, err := op.handleInParam(
+			map[string]interface{}{"var": "region"},
+			arr,
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(arr, original) {
+			t.Fatalf("input array mutated: got %#v, want %#v", arr, original)
+		}
+	})
+}
+
 func TestComparisonOperator_processArithmeticExpressionParam(t *testing.T) {
 	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
 	op := NewComparisonOperator(config)
