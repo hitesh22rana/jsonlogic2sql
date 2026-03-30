@@ -130,8 +130,10 @@ type QueryParam struct {
 | `true` / `false` | — | Not parameterized (inline `TRUE`/`FALSE`) |
 | `null` | — | Not parameterized (inline `NULL`) |
 | Integer string `> int64` range | `string` | Quoted string inputs like `"9223372036854775808"` also preserved as string |
+| `1e309` (overflow float) | `string` | Out-of-range floats preserved as original string |
+| `1e-400` (underflow float) | `string` | Non-zero values that underflow to float64 zero preserved as original string |
 
-> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve full precision for large integer literals. This means unquoted integers like `9223372036854775808` in your JSON input produce exact SQL (`amount >= 9223372036854775808`) instead of lossy float64 representations. Callers binding large integer string params may need to convert them to their driver's numeric type.
+> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve full precision for numeric literals. Unquoted integers like `9223372036854775808` produce exact SQL instead of lossy float64 representations. Floats outside the representable float64 range (e.g., `1e309` overflow, `1e-400` underflow to zero) are preserved as their original string to match inline transpilation behavior. Callers binding string-typed numeric params may need to convert them to their driver's numeric type.
 
 ## Schema Coercion
 

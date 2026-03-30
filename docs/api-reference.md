@@ -299,7 +299,7 @@ type QueryParam struct {
 }
 ```
 
-> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve precision. JS-safe integers (within ±2^53−1) bind as `float64`; larger integers (both unquoted JSON literals and quoted strings exceeding `int64`) bind as `string`. Callers binding large integer params may need to convert them to their driver's numeric type.
+> **Note:** JSON decoding uses `json.Decoder.UseNumber()` to preserve precision. JS-safe integers (within ±2^53−1) bind as `float64`; larger integers (both unquoted JSON literals and quoted strings exceeding `int64`) bind as `string`. Floats outside the representable float64 range (e.g., `1e309` overflow, `1e-400` underflow to zero) are also preserved as `string`. Callers binding string-typed numeric params may need to convert them to their driver's numeric type.
 
 ### TranspileError
 
