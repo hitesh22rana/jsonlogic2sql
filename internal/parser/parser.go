@@ -751,6 +751,11 @@ func (p *Parser) primitiveToSQLParam(value interface{}, pc *params.ParamCollecto
 		return "FALSE"
 	case nil:
 		return "NULL"
+	case []interface{}:
+		// Format arrays as strings matching the non-param primitiveToSQL path.
+		// Custom operators (e.g. REPL contains) rely on the "[x]" string form
+		// to detect and unwrap single-element array patterns.
+		return fmt.Sprintf("%v", v)
 	default:
 		return pc.Add(v)
 	}
