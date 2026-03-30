@@ -409,6 +409,62 @@ func TestTranspileParameterized_CustomOperator(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_CustomOperator_OutOfRangeFloatsPreserved(t *testing.T) {
+	tests := []struct {
+		name      string
+		jsonLogic string
+		wantValue string
+	}{
+		{
+			name:      "overflow float 1e309 preserved as string",
+			jsonLogic: `{"id": [1e309]}`,
+			wantValue: "1e309",
+		},
+		{
+			name:      "underflow float 1e-400 preserved as string",
+			jsonLogic: `{"id": [1e-400]}`,
+			wantValue: "1e-400",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspiler(DialectBigQuery)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+
+			err = tp.RegisterOperatorFunc("id", func(op string, args []interface{}) (string, error) {
+				if len(args) != 1 {
+					return "", fmt.Errorf("id requires exactly 1 argument")
+				}
+				return fmt.Sprintf("%s", args[0]), nil
+			})
+			if err != nil {
+				t.Fatalf("RegisterOperatorFunc() error = %v", err)
+			}
+
+			sql, params, err := tp.TranspileParameterized(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if sql != "WHERE @p1" {
+				t.Errorf("SQL = %q, want %q", sql, "WHERE @p1")
+			}
+			if len(params) != 1 {
+				t.Fatalf("expected 1 param, got %d", len(params))
+			}
+			str, ok := params[0].Value.(string)
+			if !ok {
+				t.Fatalf("param[0].Value type = %T, want string", params[0].Value)
+			}
+			if str != tt.wantValue {
+				t.Errorf("param[0].Value = %q, want %q", str, tt.wantValue)
+			}
+		})
+	}
+}
+
 func TestTranspileParameterized_DeepNesting(t *testing.T) {
 	tp, err := NewTranspiler(DialectBigQuery)
 	if err != nil {
@@ -640,6 +696,54 @@ func TestTranspileParameterized_UnquotedLargeIntegerPrecision(t *testing.T) {
 	}
 	if str != "9223372036854775809" {
 		t.Errorf("param[0].Value = %q, want %q", str, "9223372036854775809")
+	}
+}
+
+func TestTranspileParameterized_OutOfRangeFloats(t *testing.T) {
+	tests := []struct {
+		name      string
+		jsonLogic string
+		wantSQL   string
+		wantValue string
+	}{
+		{
+			name:      "overflow float 1e309 preserved as string",
+			jsonLogic: `{">=": [{"var": "x"}, 1e309]}`,
+			wantSQL:   "WHERE x >= @p1",
+			wantValue: "1e309",
+		},
+		{
+			name:      "underflow float 1e-400 preserved as string",
+			jsonLogic: `{"<=": [{"var": "x"}, 1e-400]}`,
+			wantSQL:   "WHERE x <= @p1",
+			wantValue: "1e-400",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspiler(DialectBigQuery)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			sql, params, err := tp.TranspileParameterized(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("SQL = %q, want %q", sql, tt.wantSQL)
+			}
+			if len(params) != 1 {
+				t.Fatalf("expected 1 param, got %d", len(params))
+			}
+			str, ok := params[0].Value.(string)
+			if !ok {
+				t.Fatalf("param[0].Value type = %T, want string", params[0].Value)
+			}
+			if str != tt.wantValue {
+				t.Errorf("param[0].Value = %q, want %q", str, tt.wantValue)
+			}
+		})
 	}
 }
 
