@@ -1006,7 +1006,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "if with arithmetic result",
 			input:    `{"if": [{">": [{"var": "qty"}, 100]}, {"*": [{"var": "price"}, 0.9]}, {"*": [{"var": "price"}, 1.0]}]}`,
-			expected: "WHERE CASE WHEN qty > 100 THEN (price * 0.9) ELSE (price * 1) END",
+			expected: "WHERE CASE WHEN qty > 100 THEN (price * 0.9) ELSE (price * 1.0) END",
 			hasError: false,
 		},
 
@@ -1611,6 +1611,34 @@ func TestTranspiler_SetSchema_NilRestoresIdentifierValidation(t *testing.T) {
 	tr.SetSchema(nil)
 	if _, err := tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`); err == nil {
 		t.Fatal("expected invalid identifier error after SetSchema(nil)")
+	}
+}
+
+func TestTranspile_PreservesLargeJSONIntegerLiterals(t *testing.T) {
+	tr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() unexpected error: %v", err)
+	}
+
+	sql1, err := tr.Transpile(`{"==": [{"var": "amount"}, 9223372036854775808]}`)
+	if err != nil {
+		t.Fatalf("Transpile() unexpected error: %v", err)
+	}
+	sql2, err := tr.Transpile(`{"==": [{"var": "amount"}, 9223372036854775809]}`)
+	if err != nil {
+		t.Fatalf("Transpile() unexpected error: %v", err)
+	}
+
+	want1 := "WHERE amount = 9223372036854775808"
+	want2 := "WHERE amount = 9223372036854775809"
+	if sql1 != want1 {
+		t.Errorf("sql1 = %q, want %q", sql1, want1)
+	}
+	if sql2 != want2 {
+		t.Errorf("sql2 = %q, want %q", sql2, want2)
+	}
+	if sql1 == sql2 {
+		t.Errorf("expected distinct SQL for distinct large integer literals, got %q", sql1)
 	}
 }
 

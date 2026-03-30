@@ -618,6 +618,31 @@ func TestTranspileParameterized_LargeIntegerPrecision(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_UnquotedLargeIntegerPrecision(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+
+	sql, params, err := tp.TranspileParameterized(`{">=": [{"var": "amount"}, 9223372036854775809]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if sql != "WHERE amount >= @p1" {
+		t.Errorf("SQL = %q, want %q", sql, "WHERE amount >= @p1")
+	}
+	if len(params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(params))
+	}
+	str, ok := params[0].Value.(string)
+	if !ok {
+		t.Fatalf("param[0].Value type = %T, want string", params[0].Value)
+	}
+	if str != "9223372036854775809" {
+		t.Errorf("param[0].Value = %q, want %q", str, "9223372036854775809")
+	}
+}
+
 func TestTranspileParameterized_InStringContainment(t *testing.T) {
 	tests := []struct {
 		name       string

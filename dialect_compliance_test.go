@@ -518,9 +518,9 @@ func TestEdgeCasesNumericBoundaries(t *testing.T) {
 	}{
 		{"zero", `{"==": [{"var": "x"}, 0]}`, "WHERE x = 0"},
 		{"negative number", `{"==": [{"var": "x"}, -100]}`, "WHERE x = -100"},
-		{"large number", `{"==": [{"var": "x"}, 9999999999999]}`, "WHERE x = 9.999999999999e+12"}, // JSON numbers are float64
+		{"large number", `{"==": [{"var": "x"}, 9999999999999]}`, "WHERE x = 9999999999999"},
 		{"decimal", `{"==": [{"var": "x"}, 3.14159]}`, "WHERE x = 3.14159"},
-		{"scientific notation", `{"==": [{"var": "x"}, 1e10]}`, "WHERE x = 1e+10"}, // Preserved as scientific notation
+		{"scientific notation", `{"==": [{"var": "x"}, 1e10]}`, "WHERE x = 1e10"},
 		{"negative decimal", `{"==": [{"var": "x"}, -0.001]}`, "WHERE x = -0.001"},
 		{"negative in subtraction", `{"-": [5, -3]}`, "WHERE (5 - -3)"},
 		{"unary minus on negative", `{"-": [-5]}`, "WHERE (--5)"},
