@@ -299,6 +299,8 @@ type QueryParam struct {
 }
 ```
 
+> **Note:** Integer strings that overflow `int64` (e.g., `"9223372036854775808"`) are stored as `string` for `database/sql` driver compatibility. Callers binding such values may need to convert them to their driver's appropriate numeric type.
+
 ### TranspileError
 
 Structured error type returned by transpilation operations.

@@ -118,6 +118,17 @@ type QueryParam struct {
 }
 ```
 
+**Value types by input:**
+
+| JSONLogic Input | `Value` Go Type | Notes |
+|-----------------|-----------------|-------|
+| `"hello"` | `string` | |
+| `42` | `float64` | JSON numbers are float64 in Go |
+| Coerced integer (schema) | `int64` | Schema coerces `"50000"` → `int64(50000)` for integer fields |
+| `true` / `false` | — | Not parameterized (inline `TRUE`/`FALSE`) |
+| `null` | — | Not parameterized (inline `NULL`) |
+| Integer string `> int64` range | `string` | e.g., `"9223372036854775808"` is stored as string for `database/sql` driver compatibility; callers may need to convert to their driver's numeric type |
+
 ## Schema Coercion
 
 When a schema is configured, values are coerced **before** being bound as parameters. For example, if a field is declared as `integer` and the JSONLogic contains a string `"50000"`, the bound parameter value will be `int64(50000)`, not the string `"50000"`.
