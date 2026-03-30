@@ -150,6 +150,7 @@ func TestParseContainsArgs(t *testing.T) {
 // setupTestTranspiler creates a transpiler with the same custom operators as the REPL.
 func setupTestTranspiler(t *testing.T) *jsonlogic2sql.Transpiler {
 	t.Helper()
+	currentDialect = jsonlogic2sql.DialectBigQuery
 	tr, err := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectBigQuery)
 	if err != nil {
 		t.Fatalf("NewTranspiler: %v", err)
@@ -521,7 +522,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "startsWith parameterized",
 			jsonExpr: `{"startsWith": [{"var": "name"}, "Al"]}`,
-			wantSQL:  "WHERE name LIKE CONCAT(REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
+			wantSQL:  "WHERE name LIKE CONCAT(REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "Al"},
 			},
@@ -529,7 +530,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!startsWith parameterized",
 			jsonExpr: `{"!startsWith": [{"var": "name"}, "Al"]}`,
-			wantSQL:  "WHERE name NOT LIKE CONCAT(REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
+			wantSQL:  "WHERE name NOT LIKE CONCAT(REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "Al"},
 			},
@@ -537,7 +538,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "endsWith parameterized",
 			jsonExpr: `{"endsWith": [{"var": "email"}, "@example.com"]}`,
-			wantSQL:  "WHERE email LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
+			wantSQL:  "WHERE email LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "@example.com"},
 			},
@@ -545,7 +546,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!endsWith parameterized",
 			jsonExpr: `{"!endsWith": [{"var": "email"}, "@example.com"]}`,
-			wantSQL:  "WHERE email NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
+			wantSQL:  "WHERE email NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'))",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "@example.com"},
 			},
@@ -553,7 +554,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "contains parameterized",
 			jsonExpr: `{"contains": [{"var": "desc"}, "hello"]}`,
-			wantSQL:  "WHERE desc LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
+			wantSQL:  "WHERE desc LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "hello"},
 			},
@@ -561,7 +562,7 @@ func TestTranspileParameterized_LikeOperators(t *testing.T) {
 		{
 			name:     "!contains parameterized",
 			jsonExpr: `{"!contains": [{"var": "desc"}, "hello"]}`,
-			wantSQL:  "WHERE desc NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
+			wantSQL:  "WHERE desc NOT LIKE CONCAT('%', REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_'), '%')",
 			wantParams: []jsonlogic2sql.QueryParam{
 				{Name: "p1", Value: "hello"},
 			},
@@ -629,6 +630,7 @@ func TestTranspileParameterized_LikeOperators_PlaceholderNotQuoted(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			currentDialect = tt.dialect
 			tr, err := jsonlogic2sql.NewTranspiler(tt.dialect)
 			if err != nil {
 				t.Fatalf("NewTranspiler: %v", err)
@@ -716,7 +718,7 @@ func TestLikeOperatorsNonParamStillWork(t *testing.T) {
 }
 
 func TestContainsReversedArgsParameterized(t *testing.T) {
-	escReplace := "REPLACE(REPLACE(REPLACE(@p1, '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_')"
+	escReplace := "REPLACE(REPLACE(REPLACE(CAST(@p1 AS STRING), '\\\\', '\\\\\\\\'), '%', '\\%'), '_', '\\_')"
 
 	tests := []struct {
 		name       string
