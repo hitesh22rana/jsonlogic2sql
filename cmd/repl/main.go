@@ -55,14 +55,25 @@ func isSQLStringLiteral(s string) bool {
 	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
 }
 
+// castToString returns a SQL CAST expression that coerces expr to a string
+// type appropriate for the given dialect, ensuring REPLACE receives text input
+// even when the bind parameter is numeric.
+func castToString(expr string, d jsonlogic2sql.Dialect) string {
+	castType := "STRING"
+	if d == jsonlogic2sql.DialectPostgreSQL || d == jsonlogic2sql.DialectDuckDB {
+		castType = "TEXT"
+	}
+	return fmt.Sprintf("CAST(%s AS %s)", expr, castType)
+}
+
 // escapeLikeExpr wraps a SQL expression with REPLACE calls that escape
-// LIKE metacharacters (%, _) at query execution time. This ensures bind
-// parameter values containing these characters are treated as literals,
-// matching the escaping applied in the non-parameterized inline path.
-func escapeLikeExpr(expr string) string {
+// LIKE metacharacters (%, _) at query execution time. The expression is
+// first cast to a string type so that numeric bind parameters do not
+// cause runtime errors in REPLACE.
+func escapeLikeExpr(expr string, d jsonlogic2sql.Dialect) string {
 	return fmt.Sprintf(
 		"REPLACE(REPLACE(REPLACE(%s, '\\\\', '\\\\\\\\'), '%%', '\\%%'), '_', '\\_')",
-		expr,
+		castToString(expr, d),
 	)
 }
 
@@ -70,9 +81,9 @@ func escapeLikeExpr(expr string) string {
 //
 // Three pattern argument forms are handled:
 //  1. SQL string literal ('hello'): unquote, escape LIKE wildcards, inline.
-//  2. Bind placeholder (@p1, $1): wrap with SQL REPLACE for runtime escaping.
+//  2. Bind placeholder (@p1, $1): CAST to string, wrap with REPLACE for runtime escaping.
 //  3. Unquoted primitive (1000, TRUE): treat as a literal value, escape and inline.
-func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string {
+func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool, d jsonlogic2sql.Dialect) string {
 	keyword := "LIKE"
 	if negate {
 		keyword = "NOT LIKE"
@@ -82,7 +93,7 @@ func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool) string
 		return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(raw), suffix)
 	}
 	if isPlaceholder(patternArg) {
-		escaped := escapeLikeExpr(patternArg)
+		escaped := escapeLikeExpr(patternArg, d)
 		parts := make([]string, 0, 3)
 		if prefix != "" {
 			parts = append(parts, fmt.Sprintf("'%s'", prefix))
@@ -478,7 +489,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		return buildLikeSQL(column, args[1].(string), "", "%", false), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", false, currentDialect), nil
 	})
 
 	// !startsWith operator: column NOT LIKE 'value%'.
@@ -487,7 +498,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("!startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		return buildLikeSQL(column, args[1].(string), "", "%", true), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", true, currentDialect), nil
 	})
 
 	// endsWith operator: column LIKE '%value'.
@@ -496,7 +507,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		return buildLikeSQL(column, args[1].(string), "%", "", false), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", false, currentDialect), nil
 	})
 
 	// !endsWith operator: column NOT LIKE '%value'.
@@ -505,7 +516,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("!endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		return buildLikeSQL(column, args[1].(string), "%", "", true), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", true, currentDialect), nil
 	})
 
 	// contains operator: column LIKE '%value%'.
@@ -515,7 +526,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return buildLikeSQL(column, pattern, "%", "%", false), nil
+		return buildLikeSQL(column, pattern, "%", "%", false, currentDialect), nil
 	})
 
 	// !contains operator: column NOT LIKE '%value%'.
@@ -524,7 +535,7 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			return "", fmt.Errorf("!contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return buildLikeSQL(column, pattern, "%", "%", true), nil
+		return buildLikeSQL(column, pattern, "%", "%", true, currentDialect), nil
 	})
 
 	// ========================================================================
