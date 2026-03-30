@@ -248,6 +248,21 @@ func TestTranspileFromInterface_RejectsInvalidJSONNumberLiterals(t *testing.T) {
 	}
 }
 
+func TestTranspileFromMap_CustomOperatorRejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+	_ = tr.RegisterOperatorFunc("identity", func(_ string, args []interface{}) (string, error) {
+		return args[0].(string), nil
+	})
+
+	logic := map[string]interface{}{
+		"identity": []interface{}{json.Number("1 OR 1=1")},
+	}
+	_, err := tr.TranspileFromMap(logic)
+	if err == nil {
+		t.Fatal("expected error for invalid json.Number literal in custom operator input")
+	}
+}
+
 func TestTranspile(t *testing.T) {
 	tests := []struct {
 		name     string
