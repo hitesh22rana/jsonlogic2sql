@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
@@ -126,6 +127,84 @@ func ValidatePlaceholderRefs(sql string, params []QueryParam, style PlaceholderS
 		}
 	}
 	return nil
+}
+
+// FindQuotedPlaceholderRef scans SQL string literals and returns the first
+// placeholder token found inside a quoted string, if any.
+//
+// This helps catch custom operators that accidentally quote placeholders
+// (e.g. "'@p1'"), which breaks bind semantics.
+func FindQuotedPlaceholderRef(sql string, params []QueryParam, style PlaceholderStyle) (string, bool) {
+	if len(params) == 0 || style == PlaceholderQuestion {
+		return "", false
+	}
+
+	placeholders := make([]string, 0, len(params))
+	for i, p := range params {
+		placeholders = append(placeholders, formatPlaceholder(i+1, p.Name, style))
+	}
+
+	inString := false
+	stringStart := 0
+
+	for i := 0; i < len(sql); i++ {
+		if sql[i] != '\'' {
+			continue
+		}
+
+		if !inString {
+			inString = true
+			stringStart = i + 1
+			continue
+		}
+
+		// SQL escaped quote inside string literal.
+		if i+1 < len(sql) && sql[i+1] == '\'' {
+			i++
+			continue
+		}
+
+		// Closing quote found.
+		literal := sql[stringStart:i]
+		if ph, ok := findPlaceholderInLiteral(literal, placeholders, style); ok {
+			return ph, true
+		}
+		inString = false
+	}
+
+	return "", false
+}
+
+func findPlaceholderInLiteral(literal string, placeholders []string, style PlaceholderStyle) (string, bool) {
+	for _, ph := range placeholders {
+		searchFrom := 0
+		for {
+			idx := strings.Index(literal[searchFrom:], ph)
+			if idx < 0 {
+				break
+			}
+			start := searchFrom + idx
+			end := start + len(ph)
+			if hasPlaceholderBoundaries(literal, start, end, style) {
+				return ph, true
+			}
+			searchFrom = start + 1
+		}
+	}
+	return "", false
+}
+
+func hasPlaceholderBoundaries(s string, start, end int, style PlaceholderStyle) bool {
+	beforeOK := start == 0 || !isPlaceholderBoundaryChar(s[start-1], style)
+	afterOK := end == len(s) || !isPlaceholderBoundaryChar(s[end], style)
+	return beforeOK && afterOK
+}
+
+func isPlaceholderBoundaryChar(ch byte, style PlaceholderStyle) bool {
+	if ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+		return true
+	}
+	return style == PlaceholderPositional && ch == '$'
 }
 
 // placeholderRefPattern builds a regex that matches a placeholder token with

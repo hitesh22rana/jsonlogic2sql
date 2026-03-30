@@ -543,6 +543,10 @@ func (p *Parser) parseOperatorParam(operator string, args interface{}, path stri
 				return "", tperrors.Wrap(tperrors.ErrCustomOperatorFailed, operator, path,
 					"custom operator failed", err)
 			}
+			if ph, bad := params.FindQuotedPlaceholderRef(sql, pc.Params(), pc.Style()); bad {
+				return "", tperrors.New(tperrors.ErrCustomOperatorFailed, operator, path,
+					fmt.Sprintf("custom operator produced invalid parameterized SQL: placeholder %s appears inside a quoted string literal", ph))
+			}
 			return sql, nil
 		}
 	}
