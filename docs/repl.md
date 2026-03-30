@@ -32,6 +32,7 @@ SQL: WHERE (status = 'active' AND count > 5)
 | `:help` | Show available commands |
 | `:examples` | Show example JSON Logic expressions |
 | `:dialect` | Change the SQL dialect |
+| `:params` | Toggle parameterized query output (bind placeholders) |
 | `:schema <path>` | Load a schema JSON file for validation |
 | `:file <path>` | Read JSON Logic from a file |
 | `:clear` | Clear the screen |
@@ -56,6 +57,36 @@ SQL: WHERE (a || b)
 ```
 
 The prompt shows the current dialect in brackets.
+
+## Parameterized Output
+
+Use `:params` to toggle parameterized query mode. When enabled, the output uses bind placeholders instead of inlined literals:
+
+```
+[BigQuery] jsonlogic> :params
+Parameterized mode: ON (output uses bind placeholders)
+
+[BigQuery] jsonlogic> {"and": [{"==": [{"var": "status"}, "active"]}, {">": [{"var": "amount"}, 1000]}]}
+SQL:    WHERE (status = @p1 AND amount > @p2)
+Params: [{p1: "active"}, {p2: 1000}]
+
+[BigQuery] jsonlogic> :params
+Parameterized mode: OFF (output uses inlined literals)
+
+[BigQuery] jsonlogic> {"and": [{"==": [{"var": "status"}, "active"]}, {">": [{"var": "amount"}, 1000]}]}
+SQL: WHERE (status = 'active' AND amount > 1000)
+```
+
+Placeholder styles vary by dialect (`@p1` for BigQuery/Spanner/ClickHouse, `$1` for PostgreSQL/DuckDB). See [Parameterized Queries](parameterized-queries.md) for details.
+
+### Pattern-Matching Note (`LIKE`)
+
+In parameterized mode, pattern operators (for example `startsWith`, `endsWith`, `contains`) must keep placeholders outside string literals.
+
+- Correct: `LIKE CONCAT(@p1, '%')`
+- Incorrect: `LIKE '@p1%'`
+
+The correct form preserves bind semantics; the incorrect form treats the placeholder text as a literal string.
 
 ## Large JSON Input
 

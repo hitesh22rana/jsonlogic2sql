@@ -58,8 +58,16 @@ const result = jsonlogic2sql.transpile(t.id, '{"==": [{"var": "status"}, "active
 // result = { sql: "WHERE status = 'active'" }
 
 // Transpile condition only (without WHERE prefix)
-const result = jsonlogic2sql.transpileCondition(t.id, '{"==": [{"var": "status"}, "active"]}');
-// result = { sql: "status = 'active'" }
+const cond = jsonlogic2sql.transpileCondition(t.id, '{"==": [{"var": "status"}, "active"]}');
+// cond = { sql: "status = 'active'" }
+
+// Parameterized query (bind placeholders instead of inlined literals)
+const param = jsonlogic2sql.transpileParameterized(t.id, '{"==": [{"var": "status"}, "active"]}');
+// param = { sql: "WHERE status = @p1", params: '[{"Name":"p1","Value":"active"}]' }
+
+// Parameterized condition only
+const paramCond = jsonlogic2sql.transpileConditionParameterized(t.id, '{"==": [{"var": "status"}, "active"]}');
+// paramCond = { sql: "status = @p1", params: '[{"Name":"p1","Value":"active"}]' }
 
 // Set schema for field validation and type coercion
 const schemaResult = jsonlogic2sql.setSchema(t.id, JSON.stringify([
@@ -82,6 +90,15 @@ const samples = JSON.parse(jsonlogic2sql.getSamples());
 
 // Clean up
 jsonlogic2sql.destroyTranspiler(t.id);
+```
+
+### Quick Usage - Parameterized
+
+```javascript
+const result = jsonlogic2sql.quickTranspileParameterized('bigquery', '{"==": [{"var": "status"}, "active"]}');
+// result = { sql: "WHERE status = @p1", params: '[{"Name":"p1","Value":"active"}]' }
+const params = JSON.parse(result.params);
+// params = [{ Name: "p1", Value: "active" }]
 ```
 
 ### Error Handling
@@ -111,6 +128,7 @@ The included `index.html` demo provides:
 
 - **Dialect picker** - switch between all 5 SQL dialects
 - **Compare all dialects** - view output for all dialects side-by-side
+- **Parameterized mode** - toggle bind placeholders with a separate parameter list
 - **Schema support** - import from JSON file, load a sample schema, or type manually
 - **WHERE vs Condition toggle** - switch between `WHERE status = 'active'` and `status = 'active'`
 - **Sample expressions** - 10 built-in examples covering common patterns

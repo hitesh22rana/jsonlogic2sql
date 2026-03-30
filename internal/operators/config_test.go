@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 func TestNewOperatorConfig(t *testing.T) {
@@ -519,5 +520,112 @@ func TestOperatorConfig_ParseExpression(t *testing.T) {
 	}
 	if result != "RESULT_SQL" {
 		t.Errorf("ParseExpression() = %v, want RESULT_SQL", result)
+	}
+}
+
+func TestOperatorConfig_SetParamExpressionParser(t *testing.T) {
+	// Test setting a parser on a valid config
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	if config.HasParamExpressionParser() {
+		t.Errorf("HasParamExpressionParser() should be false before setting")
+	}
+
+	parser := func(expr any, path string, pc *params.ParamCollector) (string, error) {
+		return "PARSED", nil
+	}
+	config.SetParamExpressionParser(parser)
+
+	if !config.HasParamExpressionParser() {
+		t.Errorf("HasParamExpressionParser() should be true after setting")
+	}
+
+	pc := params.NewParamCollector(params.PlaceholderNamed)
+	// Test the parser works
+	result, err := config.ParseExpressionParam(nil, "$", pc)
+	if err != nil {
+		t.Errorf("ParseExpressionParam() unexpected error = %v", err)
+	}
+	if result != "PARSED" {
+		t.Errorf("ParseExpressionParam() = %v, want PARSED", result)
+	}
+
+	// Test setting on nil config (should not panic)
+	var nilConfig *OperatorConfig
+	nilConfig.SetParamExpressionParser(parser) // Should be a no-op
+}
+
+func TestOperatorConfig_HasParamExpressionParser(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *OperatorConfig
+		want   bool
+	}{
+		{
+			name:   "nil config",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "config without parser",
+			config: &OperatorConfig{Dialect: dialect.DialectBigQuery},
+			want:   false,
+		},
+		{
+			name: "config with parser",
+			config: &OperatorConfig{
+				Dialect: dialect.DialectBigQuery,
+				ParamExpressionParser: func(expr any, path string, pc *params.ParamCollector) (string, error) {
+					return "", nil
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.config.HasParamExpressionParser(); got != tt.want {
+				t.Errorf("HasParamExpressionParser() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOperatorConfig_ParseExpressionParam(t *testing.T) {
+	pc := params.NewParamCollector(params.PlaceholderNamed)
+
+	// Test with no parser configured
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	_, err := config.ParseExpressionParam(nil, "$", pc)
+	if err == nil {
+		t.Errorf("ParseExpressionParam() expected error when no parser configured, got nil")
+	}
+
+	// Test with nil config
+	var nilConfig *OperatorConfig
+	_, err = nilConfig.ParseExpressionParam(nil, "$", pc)
+	if err == nil {
+		t.Errorf("ParseExpressionParam() expected error for nil config, got nil")
+	}
+
+	// Test with parser that returns error
+	config.SetParamExpressionParser(func(expr any, path string, pc *params.ParamCollector) (string, error) {
+		return "", fmt.Errorf("parse error")
+	})
+	_, err = config.ParseExpressionParam(nil, "$", pc)
+	if err == nil {
+		t.Errorf("ParseExpressionParam() expected error from parser, got nil")
+	}
+
+	// Test with parser that succeeds
+	config.SetParamExpressionParser(func(expr any, path string, pc *params.ParamCollector) (string, error) {
+		return "RESULT_SQL", nil
+	})
+	result, err := config.ParseExpressionParam(map[string]interface{}{"custom": "op"}, "$.custom", pc)
+	if err != nil {
+		t.Errorf("ParseExpressionParam() unexpected error = %v", err)
+	}
+	if result != "RESULT_SQL" {
+		t.Errorf("ParseExpressionParam() = %v, want RESULT_SQL", result)
 	}
 }

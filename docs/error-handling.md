@@ -65,6 +65,7 @@ All errors are wrapped in a `TranspileError` type that includes:
 | E302 | `ErrInvalidArgument` | Invalid argument value |
 | E303 | `ErrInvalidArgType` | Invalid argument type |
 | E304 | `ErrInvalidDefaultValue` | Invalid default value |
+| E350 | `ErrUnreferencedPlaceholder` | A collected bind parameter has no matching placeholder in the generated SQL (parameterized mode only) |
 
 ## Programmatic Error Handling
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // ExpressionParser is a callback function type for parsing nested expressions.
@@ -12,13 +13,18 @@ import (
 // The path parameter is the JSONPath for error reporting.
 type ExpressionParser func(expr any, path string) (string, error)
 
+// ParamExpressionParser is the parameterized variant of ExpressionParser.
+// It additionally receives a ParamCollector to register bind parameters.
+type ParamExpressionParser func(expr any, path string, pc *params.ParamCollector) (string, error)
+
 // OperatorConfig holds shared configuration for all operators.
 // By using a shared config object, all operators automatically see
 // configuration changes without requiring individual SetSchema calls.
 type OperatorConfig struct {
-	Schema           SchemaProvider
-	Dialect          dialect.Dialect
-	ExpressionParser ExpressionParser
+	Schema                SchemaProvider
+	Dialect               dialect.Dialect
+	ExpressionParser      ExpressionParser
+	ParamExpressionParser ParamExpressionParser
 }
 
 // NewOperatorConfig creates a new operator config with dialect and optional schema.
@@ -115,4 +121,25 @@ func (c *OperatorConfig) ParseExpression(expr any, path string) (string, error) 
 		return "", fmt.Errorf("expression parser not configured")
 	}
 	return c.ExpressionParser(expr, path)
+}
+
+// SetParamExpressionParser sets the callback for parsing nested expressions
+// in the parameterized pipeline. Called once in NewParser.
+func (c *OperatorConfig) SetParamExpressionParser(parser ParamExpressionParser) {
+	if c != nil {
+		c.ParamExpressionParser = parser
+	}
+}
+
+// HasParamExpressionParser returns true if a parameterized expression parser is configured.
+func (c *OperatorConfig) HasParamExpressionParser() bool {
+	return c != nil && c.ParamExpressionParser != nil
+}
+
+// ParseExpressionParam parses a nested expression through the parameterized pipeline.
+func (c *OperatorConfig) ParseExpressionParam(expr any, path string, pc *params.ParamCollector) (string, error) {
+	if !c.HasParamExpressionParser() {
+		return "", fmt.Errorf("parameterized expression parser not configured")
+	}
+	return c.ParamExpressionParser(expr, path, pc)
 }

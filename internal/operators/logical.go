@@ -1,8 +1,11 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // LogicalOperator handles logical operators (and, or, !, !!, if).
@@ -354,6 +357,7 @@ func (l *LogicalOperator) expressionToSQL(expr interface{}) (string, error) {
 func (l *LogicalOperator) processArgs(args []interface{}) ([]interface{}, error) {
 	processed := make([]interface{}, len(args))
 
+outer:
 	for i, arg := range args {
 		// If it's a complex expression, convert it to SQL
 		if exprMap, ok := arg.(map[string]interface{}); ok {
@@ -366,9 +370,9 @@ func (l *LogicalOperator) processArgs(args []interface{}) ([]interface{}, error)
 						if err != nil {
 							return nil, fmt.Errorf("invalid argument %d: %w", i, err)
 						}
-						// Store the SQL as a string for the operator to use
-						processed[i] = sql
-						continue
+						// Store as SQL fragment so comparison does not quote it as a literal.
+						processed[i] = ProcessedValue{Value: sql, IsSQL: true}
+						continue outer
 					}
 				}
 			}
@@ -386,11 +390,257 @@ func (l *LogicalOperator) processArgs(args []interface{}) ([]interface{}, error)
 // isPrimitive checks if a value is a primitive type.
 func (l *LogicalOperator) isPrimitive(value interface{}) bool {
 	switch value.(type) {
-	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number, bool:
 		return true
 	case nil:
 		return true
 	default:
 		return false
 	}
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (l *LogicalOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	switch operator {
+	case "and":
+		return l.handleAndParam(args, pc)
+	case "or":
+		return l.handleOrParam(args, pc)
+	case "!":
+		return l.handleNotParam(args, pc)
+	case "!!":
+		return l.handleDoubleNotParam(args, pc)
+	case "if":
+		return l.handleIfParam(args, pc)
+	default:
+		return "", fmt.Errorf("unsupported logical operator: %s", operator)
+	}
+}
+
+// handleAndParam is the parameterized variant of handleAnd. Keep in sync.
+func (l *LogicalOperator) handleAndParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("and operator requires at least 1 argument")
+	}
+	var conditions []string
+	for i, arg := range args {
+		condition, err := l.expressionToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid and argument %d: %w", i, err)
+		}
+		conditions = append(conditions, condition)
+	}
+	if len(conditions) == 1 {
+		return conditions[0], nil
+	}
+	return fmt.Sprintf("(%s)", strings.Join(conditions, " AND ")), nil
+}
+
+// handleOrParam is the parameterized variant of handleOr. Keep in sync.
+func (l *LogicalOperator) handleOrParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("or operator requires at least 1 argument")
+	}
+	var conditions []string
+	for i, arg := range args {
+		condition, err := l.expressionToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid or argument %d: %w", i, err)
+		}
+		conditions = append(conditions, condition)
+	}
+	if len(conditions) == 1 {
+		return conditions[0], nil
+	}
+	return fmt.Sprintf("(%s)", strings.Join(conditions, " OR ")), nil
+}
+
+// handleNotParam is the parameterized variant of handleNot. Keep in sync.
+func (l *LogicalOperator) handleNotParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("! operator requires exactly 1 argument")
+	}
+	condition, err := l.expressionToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid ! argument: %w", err)
+	}
+	return fmt.Sprintf("NOT (%s)", condition), nil
+}
+
+// handleDoubleNotParam is the parameterized variant of handleDoubleNot. Keep in sync.
+func (l *LogicalOperator) handleDoubleNotParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("!! operator requires exactly 1 argument")
+	}
+
+	if arr, ok := args[0].([]interface{}); ok {
+		if len(arr) == 0 {
+			return "FALSE", nil
+		}
+		return "TRUE", nil
+	}
+
+	fieldName := l.extractVarFieldName(args[0])
+
+	condition, err := l.expressionToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid !! argument: %w", err)
+	}
+
+	if fieldName != "" && l.config != nil && l.config.Schema != nil {
+		return l.generateTypeSafeTruthiness(condition, fieldName)
+	}
+
+	return fmt.Sprintf("(%s IS NOT NULL AND %s != FALSE AND %s != 0 AND %s != '')",
+		condition, condition, condition, condition), nil
+}
+
+// handleIfParam is the parameterized variant of handleIf. Keep in sync.
+func (l *LogicalOperator) handleIfParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("if requires at least 2 arguments")
+	}
+
+	if len(args) > 3 && len(args)%2 == 1 {
+		var caseParts []string
+		for i := 0; i < len(args)-1; i += 2 {
+			condition, err := l.expressionToSQLParam(args[i], pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid if condition %d: %w", i/2, err)
+			}
+			value, err := l.expressionToSQLParam(args[i+1], pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid if value %d: %w", i/2, err)
+			}
+			caseParts = append(caseParts, fmt.Sprintf("WHEN %s THEN %s", condition, value))
+		}
+		elseValue, err := l.expressionToSQLParam(args[len(args)-1], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid if else value: %w", err)
+		}
+		return fmt.Sprintf("CASE %s ELSE %s END", strings.Join(caseParts, " "), elseValue), nil
+	}
+
+	condition, err := l.expressionToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid if condition: %w", err)
+	}
+	thenValue, err := l.expressionToSQLParam(args[1], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid if then value: %w", err)
+	}
+	if len(args) == 3 {
+		elseValue, err := l.expressionToSQLParam(args[2], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid if else value: %w", err)
+		}
+		return fmt.Sprintf("CASE WHEN %s THEN %s ELSE %s END", condition, thenValue, elseValue), nil
+	}
+	return fmt.Sprintf("CASE WHEN %s THEN %s ELSE NULL END", condition, thenValue), nil
+}
+
+// expressionToSQLParam is the parameterized variant of expressionToSQL. Keep in sync.
+func (l *LogicalOperator) expressionToSQLParam(expr interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := expr.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return l.dataOp.valueToSQLParam(pv.Value, pc)
+	}
+
+	if l.isPrimitive(expr) {
+		return l.dataOp.valueToSQLParam(expr, pc)
+	}
+
+	if _, ok := expr.([]interface{}); ok {
+		return "", fmt.Errorf("arrays not supported in logical expressions")
+	}
+
+	if obj, ok := expr.(map[string]interface{}); ok {
+		if len(obj) != 1 {
+			return "", fmt.Errorf("operator object must have exactly one key")
+		}
+
+		for operator, args := range obj {
+			switch operator {
+			case "var", "missing":
+				return l.dataOp.ToSQLParam(operator, []interface{}{args}, pc)
+			case "missing_some":
+				if arr, ok := args.([]interface{}); ok {
+					return l.dataOp.ToSQLParam(operator, arr, pc)
+				}
+				return "", fmt.Errorf("missing_some operator requires array arguments")
+			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
+				if arr, ok := args.([]interface{}); ok {
+					processedArgs, err := l.processArgsParam(arr, pc)
+					if err != nil {
+						return "", fmt.Errorf("failed to process comparison arguments: %w", err)
+					}
+					return l.comparisonOp.ToSQLParam(operator, processedArgs, pc)
+				}
+				return "", fmt.Errorf("comparison operator requires array arguments")
+			case "and", "or", "if":
+				if arr, ok := args.([]interface{}); ok {
+					return l.ToSQLParam(operator, arr, pc)
+				}
+				return "", fmt.Errorf("logical operator requires array arguments")
+			case "!", "!!":
+				if arr, ok := args.([]interface{}); ok {
+					return l.ToSQLParam(operator, arr, pc)
+				}
+				return l.ToSQLParam(operator, []interface{}{args}, pc)
+			case "+", "-", "*", "/", "%", "max", "min":
+				if arr, ok := args.([]interface{}); ok {
+					numericOp := NewNumericOperator(l.config)
+					return numericOp.ToSQLParam(operator, arr, pc)
+				}
+				return "", fmt.Errorf("numeric operator requires array arguments")
+			case "cat", "substr":
+				if arr, ok := args.([]interface{}); ok {
+					stringOp := NewStringOperator(l.config)
+					return stringOp.ToSQLParam(operator, arr, pc)
+				}
+				return "", fmt.Errorf("string operator requires array arguments")
+			case "map", "filter", "reduce", "all", "some", "none", "merge":
+				if arr, ok := args.([]interface{}); ok {
+					arrayOp := NewArrayOperator(l.config)
+					return arrayOp.ToSQLParam(operator, arr, pc)
+				}
+				return "", fmt.Errorf("array operator requires array arguments")
+			default:
+				if l.config != nil && l.config.HasParamExpressionParser() {
+					return l.config.ParseExpressionParam(obj, "$", pc)
+				}
+				return "", fmt.Errorf("unsupported operator in logical expression: %s", operator)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("invalid expression type: %T", expr)
+}
+
+// processArgsParam is the parameterized variant of processArgs. Keep in sync.
+func (l *LogicalOperator) processArgsParam(args []interface{}, pc *params.ParamCollector) ([]interface{}, error) {
+	processed := make([]interface{}, len(args))
+outer:
+	for i, arg := range args {
+		if exprMap, ok := arg.(map[string]interface{}); ok {
+			if len(exprMap) == 1 {
+				for operator := range exprMap {
+					if operator != "var" {
+						sql, err := l.expressionToSQLParam(arg, pc)
+						if err != nil {
+							return nil, fmt.Errorf("invalid argument %d: %w", i, err)
+						}
+						processed[i] = ProcessedValue{Value: sql, IsSQL: true}
+						continue outer
+					}
+				}
+			}
+			processed[i] = arg
+			continue
+		}
+		processed[i] = arg
+	}
+	return processed, nil
 }

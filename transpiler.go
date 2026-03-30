@@ -3,6 +3,8 @@ package jsonlogic2sql
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
@@ -36,10 +38,22 @@ type Transpiler struct {
 	customOperators *OperatorRegistry
 }
 
+// schemaProvider returns a nil interface when schema is nil, avoiding typed-nil
+// interface values that can bypass no-schema identifier validation.
+func schemaProvider(schema *Schema) operators.SchemaProvider {
+	if schema == nil {
+		return nil
+	}
+	return schema
+}
+
 // SetSchema sets the schema for field validation and type checking
 // This is optional - if not set, no schema validation will be performed.
 func (t *Transpiler) SetSchema(schema *Schema) {
-	t.operatorConfig.Schema = schema
+	t.operatorConfig.Schema = schemaProvider(schema)
+	if t.config != nil {
+		t.config.Schema = schema
+	}
 	// All operators automatically see the new schema through the shared config
 }
 
@@ -73,7 +87,7 @@ func NewTranspilerWithConfig(config *TranspilerConfig) (*Transpiler, error) {
 		return nil, err
 	}
 
-	opConfig := operators.NewOperatorConfig(config.Dialect, config.Schema)
+	opConfig := operators.NewOperatorConfig(config.Dialect, schemaProvider(config.Schema))
 	t := &Transpiler{
 		parser:          parser.NewParser(opConfig),
 		operatorConfig:  opConfig,
@@ -215,8 +229,8 @@ func (t *Transpiler) ClearCustomOperators() {
 
 // Transpile converts a JSON Logic string to a SQL WHERE clause.
 func (t *Transpiler) Transpile(jsonLogic string) (string, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", tperrors.NewInvalidJSON(err)
 	}
 
@@ -236,12 +250,35 @@ func (t *Transpiler) TranspileFromInterface(logic interface{}) (string, error) {
 // TranspileCondition converts a JSON Logic string to a SQL condition without the WHERE keyword.
 // This is useful when you need to embed the condition in a larger query.
 func (t *Transpiler) TranspileCondition(jsonLogic string) (string, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", tperrors.NewInvalidJSON(err)
 	}
 
 	return t.parser.ParseCondition(logic)
+}
+
+// decodeJSONLogic decodes JSON using UseNumber so integer-like literals preserve
+// precision (e.g. 9223372036854775808) instead of being coerced to float64.
+func decodeJSONLogic(input string) (interface{}, error) {
+	dec := json.NewDecoder(strings.NewReader(input))
+	dec.UseNumber()
+
+	var logic interface{}
+	if err := dec.Decode(&logic); err != nil {
+		return nil, err
+	}
+
+	// Reject trailing non-whitespace content.
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("invalid JSON: trailing content")
+		}
+		return nil, err
+	}
+
+	return logic, nil
 }
 
 // TranspileConditionFromMap converts a pre-parsed JSON Logic map to a SQL condition without the WHERE keyword.

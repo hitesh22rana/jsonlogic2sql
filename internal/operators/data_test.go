@@ -1,7 +1,11 @@
 package operators
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
+
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 func TestDataOperator_ToSQL(t *testing.T) {
@@ -324,6 +328,10 @@ func TestDataOperator_valueToSQL(t *testing.T) {
 		{"null", nil, "NULL", false},
 		{"int64", int64(123), "123", false},
 		{"float32", float32(1.5), "1.5", false},
+		{"json.Number integer", json.Number("123"), "123", false},
+		{"json.Number float", json.Number("1.25"), "1.25", false},
+		{"json.Number scientific", json.Number("1e3"), "1e3", false},
+		{"json.Number invalid SQL fragment", json.Number("1 OR 1=1"), "", true},
 		{"unsupported type", []string{"a"}, "", true},
 	}
 
@@ -542,4 +550,337 @@ func TestDataOperator_handleVar_NonStringNonArrayArg(t *testing.T) {
 	if err == nil {
 		t.Errorf("ToSQL() expected error for non-string/non-array arg, got nil")
 	}
+}
+
+func assertCollectedParams(t *testing.T, pc *params.ParamCollector, want []params.QueryParam) {
+	t.Helper()
+	got := pc.Params()
+	if len(got) != len(want) {
+		t.Fatalf("Params() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i].Name != want[i].Name {
+			t.Errorf("Params()[%d].Name = %q, want %q", i, got[i].Name, want[i].Name)
+		}
+		if !reflect.DeepEqual(got[i].Value, want[i].Value) {
+			t.Errorf("Params()[%d].Value = %#v (%T), want %#v (%T)",
+				i, got[i].Value, got[i].Value, want[i].Value, want[i].Value)
+		}
+	}
+	if pc.Count() != len(want) {
+		t.Errorf("Count() = %d, want %d", pc.Count(), len(want))
+	}
+}
+
+func TestDataOperator_ToSQLParam(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	tests := []struct {
+		name        string
+		operator    string
+		args        []interface{}
+		expectedSQL string
+		wantParams  []params.QueryParam
+		hasError    bool
+	}{
+		{
+			name:        "var with simple string",
+			operator:    "var",
+			args:        []interface{}{"amount"},
+			expectedSQL: "amount",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "var with dotted string",
+			operator:    "var",
+			args:        []interface{}{"transaction.amount"},
+			expectedSQL: "transaction.amount",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "var with array and default string",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{"amount", "pending"}},
+			expectedSQL: "COALESCE(amount, @p1)",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: "pending"}},
+			hasError:    false,
+		},
+		{
+			name:        "var with array and default number",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{"amount", float64(0)}},
+			expectedSQL: "COALESCE(amount, @p1)",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: float64(0)}},
+			hasError:    false,
+		},
+		{
+			name:        "var with array and default bool",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{"verified", true}},
+			expectedSQL: "COALESCE(verified, TRUE)",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "var with array and default nil",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{"field", nil}},
+			expectedSQL: "COALESCE(field, NULL)",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "missing with simple string",
+			operator:    "missing",
+			args:        []interface{}{"field"},
+			expectedSQL: "field IS NULL",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "missing_some with count 1",
+			operator:    "missing_some",
+			args:        []interface{}{1, []interface{}{"field1", "field2", "field3"}},
+			expectedSQL: "(field1 IS NULL OR field2 IS NULL OR field3 IS NULL)",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:     "missing_some with count 2",
+			operator: "missing_some",
+			args:     []interface{}{2, []interface{}{"field1", "field2", "field3"}},
+			expectedSQL: "(CASE WHEN field1 IS NULL THEN 1 ELSE 0 END + " +
+				"CASE WHEN field2 IS NULL THEN 1 ELSE 0 END + " +
+				"CASE WHEN field3 IS NULL THEN 1 ELSE 0 END) >= @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: float64(2)}},
+			hasError:   false,
+		},
+		{
+			name:        "unsupported operator",
+			operator:    "unsupported",
+			args:        []interface{}{"test"},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "var with empty array",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{}},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "var with non-string first arg",
+			operator:    "var",
+			args:        []interface{}{[]interface{}{123, 0}},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "var with no args",
+			operator:    "var",
+			args:        []interface{}{},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "missing with wrong arg count",
+			operator:    "missing",
+			args:        []interface{}{"field", "extra"},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "missing_some with wrong arg count",
+			operator:    "missing_some",
+			args:        []interface{}{1},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			result, err := op.ToSQLParam(tt.operator, tt.args, pc)
+
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ToSQLParam() expected error, got nil")
+				}
+				if pc.Count() != 0 {
+					t.Errorf("ToSQLParam() on error expected Count() 0, got %d", pc.Count())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ToSQLParam() unexpected error = %v", err)
+			}
+			if result != tt.expectedSQL {
+				t.Errorf("ToSQLParam() = %q, want %q", result, tt.expectedSQL)
+			}
+			assertCollectedParams(t, pc, tt.wantParams)
+		})
+	}
+}
+
+func TestDataOperator_valueToSQLParam(t *testing.T) {
+	op := NewDataOperator(nil)
+
+	tests := []struct {
+		name        string
+		input       interface{}
+		expectedSQL string
+		wantParams  []params.QueryParam
+		hasError    bool
+	}{
+		{
+			name:        "string",
+			input:       "hello",
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: "hello"}},
+			hasError:    false,
+		},
+		{
+			name:        "integer",
+			input:       42,
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: 42}},
+			hasError:    false,
+		},
+		{
+			name:        "float64",
+			input:       3.14,
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: 3.14}},
+			hasError:    false,
+		},
+		{
+			name:        "float32",
+			input:       float32(1.5),
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: float64(1.5)}},
+			hasError:    false,
+		},
+		{
+			name:        "int64",
+			input:       int64(123),
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: int64(123)}},
+			hasError:    false,
+		},
+		{
+			name:        "boolean true",
+			input:       true,
+			expectedSQL: "TRUE",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "boolean false",
+			input:       false,
+			expectedSQL: "FALSE",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "nil",
+			input:       nil,
+			expectedSQL: "NULL",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "ProcessedValue SQL",
+			input:       ProcessedValue{Value: "COUNT(*)", IsSQL: true},
+			expectedSQL: "COUNT(*)",
+			wantParams:  nil,
+			hasError:    false,
+		},
+		{
+			name:        "ProcessedValue literal string",
+			input:       ProcessedValue{Value: "hello", IsSQL: false},
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: "hello"}},
+			hasError:    false,
+		},
+		{
+			name:        "json.Number valid",
+			input:       json.Number("123"),
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: float64(123)}},
+			hasError:    false,
+		},
+		{
+			name:        "json.Number invalid SQL fragment",
+			input:       json.Number("1 OR 1=1"),
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+		{
+			name:        "unsupported type",
+			input:       []string{"a"},
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			result, err := op.valueToSQLParam(tt.input, pc)
+
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("valueToSQLParam() expected error, got nil")
+				}
+				if pc.Count() != 0 {
+					t.Errorf("valueToSQLParam() on error expected Count() 0, got %d", pc.Count())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valueToSQLParam() unexpected error = %v", err)
+			}
+			if result != tt.expectedSQL {
+				t.Errorf("valueToSQLParam() = %q, want %q", result, tt.expectedSQL)
+			}
+			assertCollectedParams(t, pc, tt.wantParams)
+		})
+	}
+}
+
+func TestDataOperator_valueToSQLParam_PositionalStyle(t *testing.T) {
+	op := NewDataOperator(nil)
+	pc := params.NewParamCollector(params.PlaceholderPositional)
+
+	s1, err := op.valueToSQLParam("first", pc)
+	if err != nil {
+		t.Fatalf("valueToSQLParam first: %v", err)
+	}
+	s2, err := op.valueToSQLParam(2, pc)
+	if err != nil {
+		t.Fatalf("valueToSQLParam second: %v", err)
+	}
+
+	if s1 != "$1" {
+		t.Errorf("first placeholder = %q, want $1", s1)
+	}
+	if s2 != "$2" {
+		t.Errorf("second placeholder = %q, want $2", s2)
+	}
+	assertCollectedParams(t, pc, []params.QueryParam{
+		{Name: "p1", Value: "first"},
+		{Name: "p2", Value: 2},
+	})
 }

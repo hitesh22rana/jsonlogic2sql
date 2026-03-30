@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql"
@@ -47,46 +48,114 @@ func extractFromArrayString(s string) string {
 	return s
 }
 
+// isSQLStringLiteral returns true if s is a SQL-quoted string literal (e.g., 'hello').
+// In non-parameterized mode, string args arrive as SQL literals like 'Al'.
+// In parameterized mode, they arrive as placeholders like @p1 or $1.
+func isSQLStringLiteral(s string) bool {
+	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
+}
+
+// castToString returns a SQL CAST expression that coerces expr to a string
+// type appropriate for the given dialect, ensuring REPLACE receives text input
+// even when the bind parameter is numeric.
+func castToString(expr string, d jsonlogic2sql.Dialect) string {
+	castType := "STRING"
+	if d == jsonlogic2sql.DialectPostgreSQL || d == jsonlogic2sql.DialectDuckDB {
+		castType = "TEXT"
+	}
+	return fmt.Sprintf("CAST(%s AS %s)", expr, castType)
+}
+
+// escapeLikeExpr wraps a SQL expression with REPLACE calls that escape
+// LIKE metacharacters (%, _) at query execution time. The expression is
+// first cast to a string type so that numeric bind parameters do not
+// cause runtime errors in REPLACE.
+func escapeLikeExpr(expr string, d jsonlogic2sql.Dialect) string {
+	return fmt.Sprintf(
+		"REPLACE(REPLACE(REPLACE(%s, '\\\\', '\\\\\\\\'), '%%', '\\%%'), '_', '\\_')",
+		castToString(expr, d),
+	)
+}
+
+// buildLikeSQL builds a LIKE/NOT LIKE expression.
+//
+// Three pattern argument forms are handled:
+//  1. SQL string literal ('hello'): unquote, escape LIKE wildcards, inline.
+//  2. Bind placeholder (@p1, $1): CAST to string, wrap with REPLACE for runtime escaping.
+//  3. Unquoted primitive (1000, TRUE): treat as a literal value, escape and inline.
+func buildLikeSQL(column, patternArg, prefix, suffix string, negate bool, d jsonlogic2sql.Dialect) string {
+	keyword := "LIKE"
+	if negate {
+		keyword = "NOT LIKE"
+	}
+	if isSQLStringLiteral(patternArg) {
+		raw := unescapeSQLString(patternArg)
+		return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(raw), suffix)
+	}
+	if isPlaceholder(patternArg) {
+		escaped := escapeLikeExpr(patternArg, d)
+		parts := make([]string, 0, 3)
+		if prefix != "" {
+			parts = append(parts, fmt.Sprintf("'%s'", prefix))
+		}
+		parts = append(parts, escaped)
+		if suffix != "" {
+			parts = append(parts, fmt.Sprintf("'%s'", suffix))
+		}
+		if len(parts) == 1 {
+			return fmt.Sprintf("%s %s %s", column, keyword, parts[0])
+		}
+		return fmt.Sprintf("%s %s CONCAT(%s)", column, keyword, strings.Join(parts, ", "))
+	}
+	// Unquoted primitive (numeric, boolean, etc.): treat as literal value.
+	return fmt.Sprintf("%s %s '%s%s%s'", column, keyword, prefix, escapeLikePattern(patternArg), suffix)
+}
+
+// placeholderRe matches bind-parameter placeholders across all supported dialects:
+// @p1, @p2, ... (BigQuery, Spanner, ClickHouse) and $1, $2, ... (PostgreSQL, DuckDB).
+var placeholderRe = regexp.MustCompile(`^(?:@p\d+|\$\d+)$`)
+
+// isPlaceholder reports whether s looks like a bind-parameter placeholder.
+func isPlaceholder(s string) bool {
+	return placeholderRe.MatchString(s)
+}
+
+// isBoundValue reports whether s is a SQL string literal or a bind placeholder.
+// Used to distinguish "value" arguments from column identifiers in custom operators.
+func isBoundValue(s string) bool {
+	return isSQLStringLiteral(s) || isPlaceholder(s)
+}
+
 // parseContainsArgs parses the arguments for contains/!contains operators.
-// Returns the column and pattern to use in the LIKE clause.
+// Returns the column and the raw pattern argument (preserving SQL quoting
+// so that buildLikeSQL can distinguish literals from placeholders).
 func parseContainsArgs(args []interface{}) (column, pattern string) {
 	arg0Str, arg0IsStr := args[0].(string)
 	arg1Str, arg1IsStr := args[1].(string)
 
 	if arg0IsStr && arg1IsStr {
-		// Check if either argument is an array string representation.
 		if strings.HasPrefix(arg1Str, "[") && strings.HasSuffix(arg1Str, "]") {
-			// Second arg is an array, extract first element.
 			column = arg0Str
-			pattern = extractFromArrayString(arg1Str)
-		} else if strings.HasPrefix(arg0Str, "[") && strings.HasSuffix(arg0Str, "]") {
-			// First arg is an array (reversed case).
-			column = arg1Str
-			pattern = extractFromArrayString(arg0Str)
-		} else {
-			// Check if arguments are reversed (pattern first, column second).
-			arg0Quoted := len(arg0Str) >= 2 && arg0Str[0] == '\'' && arg0Str[len(arg0Str)-1] == '\''
-			arg1Quoted := len(arg1Str) >= 2 && arg1Str[0] == '\'' && arg1Str[len(arg1Str)-1] == '\''
-
-			if arg0Quoted && !arg1Quoted {
-				// Reversed: pattern is first, column is second.
-				column = arg1Str
-				pattern = arg0Str
-			} else {
-				// Normal: column is first, pattern is second.
-				column = arg0Str
-				pattern = arg1Str
-			}
+			inner := extractFromArrayString(arg1Str)
+			return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
 		}
-	} else {
-		// Default: first is column, second is pattern.
-		column = args[0].(string)
-		pattern = args[1].(string)
-		// Check if pattern is an array string and extract value.
-		pattern = extractFromArrayString(pattern)
+		if strings.HasPrefix(arg0Str, "[") && strings.HasSuffix(arg0Str, "]") {
+			column = arg1Str
+			inner := extractFromArrayString(arg0Str)
+			return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
+		}
+		if isBoundValue(arg0Str) && !isBoundValue(arg1Str) {
+			return arg1Str, arg0Str
+		}
+		return arg0Str, arg1Str
 	}
 
-	pattern = unescapeSQLString(pattern)
+	column = args[0].(string)
+	pattern = args[1].(string)
+	if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
+		inner := extractFromArrayString(pattern)
+		return column, fmt.Sprintf("'%s'", strings.ReplaceAll(inner, "'", "''"))
+	}
 	return column, pattern
 }
 
@@ -107,6 +176,9 @@ var currentDialect jsonlogic2sql.Dialect
 
 // currentSchema holds the loaded schema to preserve validation across dialect switches.
 var currentSchema *jsonlogic2sql.Schema
+
+// paramsMode controls whether output uses parameterized placeholders.
+var paramsMode bool
 
 // selectDialect prompts the user to select a SQL dialect.
 func selectDialect(scanner *bufio.Scanner) jsonlogic2sql.Dialect {
@@ -200,11 +272,21 @@ func main() {
 		}
 
 		// Process JSON Logic input
-		result, err := transpiler.Transpile(input)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		if paramsMode {
+			sql, params, err := transpiler.TranspileParameterized(input)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("SQL:    %s\n", sql)
+				printParams(params)
+			}
 		} else {
-			fmt.Printf("SQL: %s\n", result)
+			result, err := transpiler.Transpile(input)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("SQL: %s\n", result)
+			}
 		}
 		fmt.Println()
 	}
@@ -243,6 +325,27 @@ func promptSchema(scanner *bufio.Scanner) *jsonlogic2sql.Schema {
 	return schema
 }
 
+// printParams formats and prints the collected query parameters.
+func printParams(params []jsonlogic2sql.QueryParam) {
+	if len(params) == 0 {
+		fmt.Println("Params: (none)")
+		return
+	}
+	fmt.Printf("Params: [")
+	for i, p := range params {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		switch v := p.Value.(type) {
+		case string:
+			fmt.Printf("{%s: %q}", p.Name, v)
+		default:
+			fmt.Printf("{%s: %v}", p.Name, v)
+		}
+	}
+	fmt.Println("]")
+}
+
 func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *bufio.Scanner) *jsonlogic2sql.Transpiler {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
@@ -258,6 +361,13 @@ func handleCommand(input string, transpiler *jsonlogic2sql.Transpiler, scanner *
 		showExamples()
 	case ":dialect":
 		return handleDialectChange(scanner)
+	case ":params":
+		paramsMode = !paramsMode
+		if paramsMode {
+			fmt.Println("Parameterized mode: ON (output uses bind placeholders)")
+		} else {
+			fmt.Println("Parameterized mode: OFF (output uses inlined literals)")
+		}
 	case ":schema":
 		handleSchemaCommand(parts, transpiler)
 	case ":file":
@@ -297,11 +407,21 @@ func handleFileInput(parts []string, transpiler *jsonlogic2sql.Transpiler) {
 		return
 	}
 
-	result, err := transpiler.Transpile(input)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+	if paramsMode {
+		sql, params, err := transpiler.TranspileParameterized(input)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("SQL:    %s\n", sql)
+			printParams(params)
+		}
 	} else {
-		fmt.Printf("SQL: %s\n", result)
+		result, err := transpiler.Transpile(input)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("SQL: %s\n", result)
+		}
 	}
 	fmt.Println()
 }
@@ -363,65 +483,59 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 	// Basic String Pattern Matching Operators
 	// ========================================================================
 
-	// startsWith operator is basically column LIKE 'value%'.
-	// args[0] is the column name (SQL), args[1] is the pattern (already quoted SQL string).
+	// startsWith operator: column LIKE 'value%'.
 	_ = transpiler.RegisterOperatorFunc("startsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", false, currentDialect), nil
 	})
 
-	// !startsWith operator is basically column NOT LIKE 'value%'.
+	// !startsWith operator: column NOT LIKE 'value%'.
 	_ = transpiler.RegisterOperatorFunc("!startsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!startsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s NOT LIKE '%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "", "%", true, currentDialect), nil
 	})
 
-	// endsWith operator is basically column LIKE '%value'.
+	// endsWith operator: column LIKE '%value'.
 	_ = transpiler.RegisterOperatorFunc("endsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", false, currentDialect), nil
 	})
 
-	// !endsWith operator is basically column NOT LIKE '%value'.
+	// !endsWith operator: column NOT LIKE '%value'.
 	_ = transpiler.RegisterOperatorFunc("!endsWith", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!endsWith requires exactly 2 arguments")
 		}
 		column := args[0].(string)
-		pattern := unescapeSQLString(args[1].(string))
-		return fmt.Sprintf("%s NOT LIKE '%%%s'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, args[1].(string), "%", "", true, currentDialect), nil
 	})
 
-	// contains operator is basically column LIKE '%value%'.
-	// Supports: {"contains": [{"var": "field"}, "T"]} or {"contains": [{"var": "field"}, ["T"]]}.
-	// Also handles reversed: {"contains": ["T", {"var": "field"}]}.
+	// contains operator: column LIKE '%value%'.
+	// Supports reversed args: {"contains": ["T", {"var": "field"}]}.
 	_ = transpiler.RegisterOperatorFunc("contains", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return fmt.Sprintf("%s LIKE '%%%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, pattern, "%", "%", false, currentDialect), nil
 	})
 
-	// !contains operator is basically column NOT LIKE '%value%'.
+	// !contains operator: column NOT LIKE '%value%'.
 	_ = transpiler.RegisterOperatorFunc("!contains", func(_ string, args []any) (string, error) {
 		if len(args) != 2 {
 			return "", fmt.Errorf("!contains requires exactly 2 arguments")
 		}
 		column, pattern := parseContainsArgs(args)
-		return fmt.Sprintf("%s NOT LIKE '%%%s%%'", column, escapeLikePattern(pattern)), nil
+		return buildLikeSQL(column, pattern, "%", "%", true, currentDialect), nil
 	})
 
 	// ========================================================================
@@ -567,7 +681,12 @@ func registerCustomOperators(transpiler *jsonlogic2sql.Transpiler) {
 			pattern := args[1].(string)
 			switch dialect {
 			case jsonlogic2sql.DialectBigQuery:
-				return fmt.Sprintf("REGEXP_CONTAINS(%s, r%s)", str, pattern), nil
+				// BigQuery raw string prefix (r'...') is only valid for literals.
+				// Placeholders/expressions must be passed without the raw prefix.
+				if isSQLStringLiteral(pattern) {
+					return fmt.Sprintf("REGEXP_CONTAINS(%s, r%s)", str, pattern), nil
+				}
+				return fmt.Sprintf("REGEXP_CONTAINS(%s, %s)", str, pattern), nil
 			case jsonlogic2sql.DialectSpanner:
 				return fmt.Sprintf("REGEXP_CONTAINS(%s, %s)", str, pattern), nil
 			case jsonlogic2sql.DialectPostgreSQL:
@@ -617,12 +736,17 @@ func showHelp() {
 	fmt.Println("  :help          - Show this help message")
 	fmt.Println("  :examples      - Show example JSON Logic expressions")
 	fmt.Println("  :dialect       - Change the SQL dialect")
+	fmt.Println("  :params        - Toggle parameterized query output (bind placeholders)")
 	fmt.Println("  :schema <path> - Load schema for validation and type-aware SQL")
 	fmt.Println("  :file <path>   - Read JSON Logic from a file (for large inputs)")
 	fmt.Println("  :clear         - Clear the screen")
 	fmt.Println("  :quit          - Exit the REPL")
 	fmt.Println()
-	fmt.Printf("Current dialect: %s\n", getDialectName(currentDialect))
+	paramStatus := "OFF"
+	if paramsMode {
+		paramStatus = "ON"
+	}
+	fmt.Printf("Current dialect: %s | Params: %s\n", getDialectName(currentDialect), paramStatus)
 	fmt.Println()
 	fmt.Println("Enter JSON Logic expressions to convert them to SQL WHERE clauses.")
 	fmt.Println("Example: {\">\": [{\"var\": \"amount\"}, 1000]}")

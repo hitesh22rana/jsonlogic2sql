@@ -2,9 +2,11 @@ package operators
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 func TestComparisonOperator_ToSQL(t *testing.T) {
@@ -212,7 +214,7 @@ func TestComparisonOperator_ToSQL(t *testing.T) {
 			name:     "in with string containment",
 			operator: "in",
 			args:     []interface{}{map[string]interface{}{"var": "field"}, "not-array"},
-			expected: "POSITION(field IN 'not-array') > 0",
+			expected: "STRPOS('not-array', field) > 0",
 			hasError: false,
 		},
 
@@ -1424,7 +1426,7 @@ func TestComparisonOperator_handleIn_WithVarRightSide(t *testing.T) {
 			dialect:  dialect.DialectBigQuery,
 			leftArg:  "3",
 			rightArg: float64(12345),
-			expected: "POSITION('3' IN 12345) > 0",
+			expected: "STRPOS(12345, '3') > 0",
 			hasError: false,
 		},
 	}
@@ -1659,5 +1661,667 @@ func TestComparisonOperator_handleIn_StringCoercion(t *testing.T) {
 	expected := "STRPOS(name, '123') > 0"
 	if result != expected {
 		t.Errorf("ToSQL() = %v, want %v", result, expected)
+	}
+}
+
+func assertQueryParams(t *testing.T, got, want []params.QueryParam) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("Params() len %d, want %d\ngot: %#v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i].Name != want[i].Name || !reflect.DeepEqual(got[i].Value, want[i].Value) {
+			t.Fatalf("Params()[%d] = {Name:%q Value:%#v (%T)}, want {Name:%q Value:%#v (%T)}",
+				i, got[i].Name, got[i].Value, got[i].Value,
+				want[i].Name, want[i].Value, want[i].Value)
+		}
+	}
+}
+
+func TestComparisonOperator_ToSQLParam(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       []interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantErr    bool
+	}{
+		{
+			name:     "equality with var and literal",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "status"}, "pending"},
+			wantSQL:  "status = @p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "pending"},
+			},
+		},
+		{
+			name:     "equality with numbers",
+			operator: "==",
+			args:     []interface{}{1, 2},
+			wantSQL:  "@p1 = @p2",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 1},
+				{Name: "p2", Value: 2},
+			},
+		},
+		{
+			name:       "equality with null",
+			operator:   "==",
+			args:       []interface{}{nil, nil},
+			wantSQL:    "NULL IS NULL",
+			wantParams: nil,
+		},
+		{
+			name:       "var and null",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "field"}, nil},
+			wantSQL:    "field IS NULL",
+			wantParams: nil,
+		},
+		{
+			name:       "inequality with var and null",
+			operator:   "!=",
+			args:       []interface{}{map[string]interface{}{"var": "field"}, nil},
+			wantSQL:    "field IS NOT NULL",
+			wantParams: nil,
+		},
+		{
+			name:       "strict equality !==  with null",
+			operator:   "!==",
+			args:       []interface{}{map[string]interface{}{"var": "field"}, nil},
+			wantSQL:    "field IS NOT NULL",
+			wantParams: nil,
+		},
+		{
+			name:     "greater than with var and number",
+			operator: ">",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, 1000},
+			wantSQL:  "amount > @p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 1000},
+			},
+		},
+		{
+			name:     "in with array",
+			operator: "in",
+			args:     []interface{}{map[string]interface{}{"var": "country"}, []interface{}{"CN", "RU"}},
+			wantSQL:  "country IN (@p1, @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "CN"},
+				{Name: "p2", Value: "RU"},
+			},
+		},
+		{
+			name:     "chained comparison",
+			operator: "<",
+			args: []interface{}{
+				10,
+				map[string]interface{}{"var": "age"},
+				30,
+			},
+			wantSQL: "(@p1 < age AND age < @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 10},
+				{Name: "p2", Value: 30},
+			},
+		},
+		{
+			name:     "too few arguments",
+			operator: "==",
+			args:     []interface{}{1},
+			wantErr:  true,
+		},
+		{
+			name:     "in with empty array",
+			operator: "in",
+			args:     []interface{}{map[string]interface{}{"var": "field"}, []interface{}{}},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.ToSQLParam(tt.operator, tt.args, pc)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ToSQLParam() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ToSQLParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Errorf("ToSQLParam() SQL = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_valueToSQLParam(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		input      interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantErr    bool
+	}{
+		{
+			name:    "literal string",
+			input:   "hello",
+			wantSQL: "@p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "hello"},
+			},
+		},
+		{
+			name:    "literal number",
+			input:   42,
+			wantSQL: "@p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 42},
+			},
+		},
+		{
+			name:       "literal boolean",
+			input:      true,
+			wantSQL:    "TRUE",
+			wantParams: nil,
+		},
+		{
+			name:       "var expression",
+			input:      map[string]interface{}{"var": "amount"},
+			wantSQL:    "amount",
+			wantParams: nil,
+		},
+		{
+			name:       "ProcessedValue SQL",
+			input:      ProcessedValue{Value: "some_col + 1", IsSQL: true},
+			wantSQL:    "some_col + 1",
+			wantParams: nil,
+		},
+		{
+			name:    "ProcessedValue literal",
+			input:   ProcessedValue{Value: "inner", IsSQL: false},
+			wantSQL: "@p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "inner"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.valueToSQLParam(tt.input, pc)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("valueToSQLParam() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valueToSQLParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Errorf("valueToSQLParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_handleInParam(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"tags":        "array",
+		"description": "string",
+		"region":      "string",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	t.Run("array type var on right uses arrayMembershipSQL", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := op.handleInParam("needle", map[string]interface{}{"var": "tags"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "@p1 IN UNNEST(tags)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		assertQueryParams(t, pc.Params(), []params.QueryParam{{Name: "p1", Value: "needle"}})
+	})
+
+	t.Run("string type var on right uses strposFunc with parameterized left", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := op.handleInParam("probe", map[string]interface{}{"var": "description"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(description, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		assertQueryParams(t, pc.Params(), []params.QueryParam{{Name: "p1", Value: "probe"}})
+	})
+
+	t.Run("array of literals parameterized", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		leftOriginal := map[string]interface{}{"var": "region"}
+		got, err := op.handleInParam(leftOriginal, []interface{}{"EU", "APAC", "US"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "region IN (@p1, @p2, @p3)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		assertQueryParams(t, pc.Params(), []params.QueryParam{
+			{Name: "p1", Value: "EU"},
+			{Name: "p2", Value: "APAC"},
+			{Name: "p3", Value: "US"},
+		})
+	})
+
+	t.Run("string containment without schema", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := noSchemaOp.handleInParam("foo", map[string]interface{}{"var": "bar"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(bar, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		assertQueryParams(t, pc.Params(), []params.QueryParam{{Name: "p1", Value: "foo"}})
+	})
+
+	t.Run("schema coercion for string field", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := op.handleInParam(float64(123), map[string]interface{}{"var": "description"}, pc)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(description, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+		if len(pc.Params()) != 1 {
+			t.Fatalf("expected 1 param, got %d: %v", len(pc.Params()), pc.Params())
+		}
+		if pc.Params()[0].Value != "123" {
+			t.Errorf("param value = %v (%T), want string \"123\"", pc.Params()[0].Value, pc.Params()[0].Value)
+		}
+	})
+
+	t.Run("ProcessedValue SQL literal treated as string containment", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "'foo'"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(col, 'foo') > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue placeholder for string param uses string containment", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add("hello") // @p1 = "hello" (string)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "@p1"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "STRPOS(col, @p1) > 0"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue placeholder for numeric param uses array membership", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add(float64(42)) // @p1 = 42 (numeric)
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "@p1"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "@p1 IN UNNEST(col)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ProcessedValue SQL expression uses array membership", func(t *testing.T) {
+		noSchemaConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+		noSchemaOp := NewComparisonOperator(noSchemaConfig)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		pc.Add("hello") // @p1 = "hello"
+		got, err := noSchemaOp.handleInParam(
+			ProcessedValue{IsSQL: true, Value: "LOWER(@p1)"},
+			map[string]interface{}{"var": "col"},
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() error = %v", err)
+		}
+		want := "LOWER(@p1) IN UNNEST(col)"
+		if got != want {
+			t.Errorf("handleInParam() = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestComparisonOperator_InDoesNotMutateInputArray(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"region": "string",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	t.Run("non-parameterized path", func(t *testing.T) {
+		arr := []interface{}{float64(1), float64(2)}
+		original := append([]interface{}(nil), arr...)
+
+		_, err := op.ToSQL("in", []interface{}{
+			map[string]interface{}{"var": "region"},
+			arr,
+		})
+		if err != nil {
+			t.Fatalf("ToSQL(in) unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(arr, original) {
+			t.Fatalf("input array mutated: got %#v, want %#v", arr, original)
+		}
+	})
+
+	t.Run("parameterized path", func(t *testing.T) {
+		arr := []interface{}{float64(1), float64(2)}
+		original := append([]interface{}(nil), arr...)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+
+		_, err := op.handleInParam(
+			map[string]interface{}{"var": "region"},
+			arr,
+			pc,
+		)
+		if err != nil {
+			t.Fatalf("handleInParam() unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(arr, original) {
+			t.Fatalf("input array mutated: got %#v, want %#v", arr, original)
+		}
+	})
+}
+
+func TestComparisonOperator_processArithmeticExpressionParam(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantErr    bool
+	}{
+		{
+			name:     "addition",
+			operator: "+",
+			args:     []interface{}{1, 2},
+			wantSQL:  "(@p1 + @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 1},
+				{Name: "p2", Value: 2},
+			},
+		},
+		{
+			name:     "unary minus",
+			operator: "-",
+			args:     []interface{}{42},
+			wantSQL:  "(-@p1)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 42},
+			},
+		},
+		{
+			name:     "unsupported operator",
+			operator: "^",
+			args:     []interface{}{2, 3},
+			wantErr:  true,
+		},
+		{
+			name:     "non-array args",
+			operator: "+",
+			args:     "invalid",
+			wantErr:  true,
+		},
+		{
+			name:     "insufficient args for binary op",
+			operator: "*",
+			args:     []interface{}{5},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.processArithmeticExpressionParam(tt.operator, tt.args, pc)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("processArithmeticExpressionParam() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("processArithmeticExpressionParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Errorf("processArithmeticExpressionParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_processComparisonExpressionParam(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantErr    bool
+	}{
+		{
+			name:     "greater than",
+			operator: ">",
+			args:     []interface{}{5, 3},
+			wantSQL:  "(@p1 > @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 5},
+				{Name: "p2", Value: 3},
+			},
+		},
+		{
+			name:     "unsupported comparison",
+			operator: "<>",
+			args:     []interface{}{1, 2},
+			wantErr:  true,
+		},
+		{
+			name:     "non-array args",
+			operator: ">",
+			args:     "invalid",
+			wantErr:  true,
+		},
+		{
+			name:     "wrong number of args",
+			operator: ">",
+			args:     []interface{}{1, 2, 3},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.processComparisonExpressionParam(tt.operator, tt.args, pc)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("processComparisonExpressionParam() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("processComparisonExpressionParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Errorf("processComparisonExpressionParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_processMinMaxExpressionParam(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantErr    bool
+	}{
+		{
+			name:     "max",
+			operator: "max",
+			args:     []interface{}{5, 10},
+			wantSQL:  "GREATEST(@p1, @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 5},
+				{Name: "p2", Value: 10},
+			},
+		},
+		{
+			name:     "unsupported min/max operator",
+			operator: "avg",
+			args:     []interface{}{1, 2},
+			wantErr:  true,
+		},
+		{
+			name:     "non-array args",
+			operator: "max",
+			args:     "invalid",
+			wantErr:  true,
+		},
+		{
+			name:     "insufficient args",
+			operator: "max",
+			args:     []interface{}{5},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.processMinMaxExpressionParam(tt.operator, tt.args, pc)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("processMinMaxExpressionParam() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("processMinMaxExpressionParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Errorf("processMinMaxExpressionParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQLParam_WithSchemaCoercion(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"age": "integer",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	pc := params.NewParamCollector(params.PlaceholderNamed)
+	got, err := op.ToSQLParam(">=", []interface{}{
+		map[string]interface{}{"var": "age"},
+		"50000",
+	}, pc)
+	if err != nil {
+		t.Fatalf("ToSQLParam() unexpected error = %v", err)
+	}
+	if got != "age >= @p1" {
+		t.Errorf("ToSQLParam() = %q, want %q", got, "age >= @p1")
+	}
+	assertQueryParams(t, pc.Params(), []params.QueryParam{
+		{Name: "p1", Value: int64(50000)},
+	})
+}
+
+func TestComparisonOperator_valueToSQLParam_ExpressionParserCallback(t *testing.T) {
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.SetParamExpressionParser(func(expr any, path string, pc *params.ParamCollector) (string, error) {
+		return "CUSTOM_PARAM()", nil
+	})
+	op := NewComparisonOperator(config)
+
+	pc := params.NewParamCollector(params.PlaceholderNamed)
+	result, err := op.valueToSQLParam(map[string]interface{}{"customOp": []interface{}{1, 2}}, pc)
+	if err != nil {
+		t.Fatalf("valueToSQLParam() unexpected error = %v", err)
+	}
+	if result != "CUSTOM_PARAM()" {
+		t.Errorf("valueToSQLParam() = %q, want CUSTOM_PARAM()", result)
+	}
+	if len(pc.Params()) != 0 {
+		t.Errorf("expected no params, got %#v", pc.Params())
 	}
 }

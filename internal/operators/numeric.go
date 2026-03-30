@@ -1,10 +1,13 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // NumericOperator handles numeric operations like +, -, *, /, %, max, min.
@@ -324,6 +327,13 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 		}
 		return n.dataOp.valueToSQL(str)
 	}
+	if num, ok := value.(json.Number); ok {
+		numberLiteral, err := normalizeJSONNumberLiteral(num)
+		if err != nil {
+			return "", err
+		}
+		return numberLiteral, nil
+	}
 
 	// Handle var expressions and complex expressions
 	if expr, ok := value.(map[string]interface{}); ok {
@@ -470,6 +480,302 @@ func (n *NumericOperator) generateComplexSQL(operator string, args []string) (st
 		// If we see them here, it means they weren't processed correctly
 		return "", fmt.Errorf("unsupported operator in numeric expression: %s", operator)
 	}
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (n *NumericOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("numeric operator %s requires at least one argument", operator)
+	}
+
+	switch operator {
+	case "+":
+		return n.handleAdditionParam(args, pc)
+	case "-":
+		return n.handleSubtractionParam(args, pc)
+	case "*":
+		return n.handleMultiplicationParam(args, pc)
+	case "/":
+		return n.handleDivisionParam(args, pc)
+	case "%":
+		return n.handleModuloParam(args, pc)
+	case "max":
+		return n.handleMaxParam(args, pc)
+	case "min":
+		return n.handleMinParam(args, pc)
+	default:
+		return "", fmt.Errorf("unsupported numeric operator: %s", operator)
+	}
+}
+
+// handleAdditionParam is the parameterized variant of handleAddition. Keep in sync.
+func (n *NumericOperator) handleAdditionParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("addition requires at least 1 argument")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	if len(args) == 1 {
+		operand, err := n.valueToSQLParam(args[0], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid unary plus argument: %w", err)
+		}
+		return fmt.Sprintf("CAST(%s AS NUMERIC)", operand), nil
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid addition argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("(%s)", strings.Join(operands, " + ")), nil
+}
+
+// handleSubtractionParam is the parameterized variant of handleSubtraction. Keep in sync.
+func (n *NumericOperator) handleSubtractionParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("subtraction requires at least 1 argument")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	if len(args) == 1 {
+		operand, err := n.valueToSQLParam(args[0], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid unary minus argument: %w", err)
+		}
+		return fmt.Sprintf("(-%s)", operand), nil
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid subtraction argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("(%s)", strings.Join(operands, " - ")), nil
+}
+
+// handleMultiplicationParam is the parameterized variant of handleMultiplication. Keep in sync.
+func (n *NumericOperator) handleMultiplicationParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("multiplication requires at least 2 arguments")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid multiplication argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("(%s)", strings.Join(operands, " * ")), nil
+}
+
+// handleDivisionParam is the parameterized variant of handleDivision. Keep in sync.
+func (n *NumericOperator) handleDivisionParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("division requires at least 2 arguments")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid division argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("(%s)", strings.Join(operands, " / ")), nil
+}
+
+// handleModuloParam is the parameterized variant of handleModulo. Keep in sync.
+func (n *NumericOperator) handleModuloParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("modulo requires exactly 2 arguments")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	left, err := n.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid modulo left argument: %w", err)
+	}
+	right, err := n.valueToSQLParam(args[1], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid modulo right argument: %w", err)
+	}
+	return fmt.Sprintf("(%s %% %s)", left, right), nil
+}
+
+// handleMaxParam is the parameterized variant of handleMax. Keep in sync.
+func (n *NumericOperator) handleMaxParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("max requires at least 2 arguments")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid max argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("GREATEST(%s)", strings.Join(operands, ", ")), nil
+}
+
+// handleMinParam is the parameterized variant of handleMin. Keep in sync.
+func (n *NumericOperator) handleMinParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("min requires at least 2 arguments")
+	}
+	for _, arg := range args {
+		if err := n.validateNumericOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid min argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("LEAST(%s)", strings.Join(operands, ", ")), nil
+}
+
+// valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
+func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return n.dataOp.valueToSQLParam(pv.Value, pc)
+	}
+
+	if str, ok := value.(string); ok {
+		trimmed := strings.TrimSpace(str)
+		if isIntegerLiteral(trimmed) {
+			n, err := strconv.ParseInt(trimmed, 10, 64)
+			if err == nil {
+				return pc.Add(n), nil
+			}
+			// Integer overflows int64; store as string to preserve full precision.
+			// *big.Int is not used because database/sql's defaultConverter rejects
+			// it (unsupported type). Callers binding large integers should convert
+			// the string to their driver's appropriate numeric type.
+			return pc.Add(trimmed), nil
+		}
+		if num, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(num) && !math.IsInf(num, 0) {
+			return pc.Add(num), nil
+		}
+		return n.dataOp.valueToSQLParam(str, pc)
+	}
+	if num, ok := value.(json.Number); ok {
+		if _, err := normalizeJSONNumberLiteral(num); err != nil {
+			return "", err
+		}
+		return pc.Add(jsonNumberParamValue(num)), nil
+	}
+
+	if expr, ok := value.(map[string]interface{}); ok {
+		if varExpr, hasVar := expr[OpVar]; hasVar {
+			return n.dataOp.ToSQLParam(OpVar, []interface{}{varExpr}, pc)
+		}
+		for operator, args := range expr {
+			if arr, ok := args.([]interface{}); ok {
+				switch operator {
+				case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
+					processedArgs, err := n.processComplexArgsForComparisonParam(arr, pc)
+					if err != nil {
+						return "", err
+					}
+					return n.comparisonOp.ToSQLParam(operator, processedArgs, pc)
+				case "+", "-", "*", "/", "%", "max", "min":
+					processedArgs, err := n.processComplexArgsParam(arr, pc)
+					if err != nil {
+						return "", err
+					}
+					return n.generateComplexSQL(operator, processedArgs)
+				case "if":
+					logicalOp := NewLogicalOperator(n.config)
+					return logicalOp.ToSQLParam("if", arr, pc)
+				case "and", "or", "!":
+					logicalOp := NewLogicalOperator(n.config)
+					return logicalOp.ToSQLParam(operator, arr, pc)
+				case "reduce", "filter", "map", "some", "all", "none", "merge":
+					arrayOp := NewArrayOperator(n.config)
+					return arrayOp.ToSQLParam(operator, arr, pc)
+				default:
+					if n.config != nil && n.config.HasParamExpressionParser() {
+						return n.config.ParseExpressionParam(expr, "$", pc)
+					}
+					return "", fmt.Errorf("unsupported operator in numeric expression: %s", operator)
+				}
+			}
+		}
+	}
+
+	return n.dataOp.valueToSQLParam(value, pc)
+}
+
+// processComplexArgsParam is the parameterized variant of processComplexArgs. Keep in sync.
+func (n *NumericOperator) processComplexArgsParam(args []interface{}, pc *params.ParamCollector) ([]string, error) {
+	processed := make([]string, len(args))
+	for i, arg := range args {
+		sql, err := n.valueToSQLParam(arg, pc)
+		if err != nil {
+			return nil, err
+		}
+		processed[i] = sql
+	}
+	return processed, nil
+}
+
+// processComplexArgsForComparisonParam is the parameterized variant of processComplexArgsForComparison. Keep in sync.
+func (n *NumericOperator) processComplexArgsForComparisonParam(args []interface{}, pc *params.ParamCollector) ([]interface{}, error) {
+	processed := make([]interface{}, len(args))
+	for i, arg := range args {
+		if exprMap, ok := arg.(map[string]interface{}); ok && len(exprMap) == 1 {
+			if _, isVar := exprMap[OpVar]; isVar {
+				processed[i] = arg
+				continue
+			}
+			sql, err := n.valueToSQLParam(arg, pc)
+			if err != nil {
+				return nil, err
+			}
+			processed[i] = SQLResult(sql)
+			continue
+		}
+		processed[i] = arg
+	}
+	return processed, nil
 }
 
 // isIntegerLiteral reports whether s matches ^[+-]?[0-9]+$ - a bare integer

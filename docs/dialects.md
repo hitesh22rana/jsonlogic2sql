@@ -89,6 +89,20 @@ transpiler.RegisterDialectAwareOperatorFunc("safeDivide",
 
 See [Custom Operators](custom-operators.md#dialect-aware-custom-operators) for more details.
 
+## Parameterized Query Placeholder Styles
+
+When using parameterized queries, the placeholder style varies by dialect:
+
+| Dialect | Style | Example Placeholders |
+|---------|-------|---------------------|
+| BigQuery | Named | `@p1`, `@p2`, `@p3` |
+| Spanner | Named | `@p1`, `@p2`, `@p3` |
+| ClickHouse | Named | `@p1`, `@p2`, `@p3` |
+| PostgreSQL | Positional | `$1`, `$2`, `$3` |
+| DuckDB | Positional | `$1`, `$2`, `$3` |
+
+See [Parameterized Queries](parameterized-queries.md) for detailed documentation and database driver integration examples.
+
 ## Unsupported Dialects
 
 ### MySQL
@@ -98,4 +112,5 @@ MySQL is not supported because it lacks native `UNNEST()` for arrays. This would
 ## See Also
 
 - [Custom Operators](custom-operators.md) - Create dialect-aware operators
+- [Parameterized Queries](parameterized-queries.md) - Bind-parameter output for safe SQL execution
 - [API Reference](api-reference.md) - Full API documentation

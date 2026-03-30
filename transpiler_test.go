@@ -1,6 +1,7 @@
 package jsonlogic2sql
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -191,6 +192,74 @@ func TestTranspiler_TranspileFromInterface(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTranspileFromMap_RejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+
+	tests := []struct {
+		name  string
+		input map[string]interface{}
+	}{
+		{
+			name: "comparison literal injection",
+			input: map[string]interface{}{
+				"==": []interface{}{
+					map[string]interface{}{"var": "x"},
+					json.Number("1 OR 1=1"),
+				},
+			},
+		},
+		{
+			name: "numeric expression literal injection",
+			input: map[string]interface{}{
+				"+": []interface{}{
+					json.Number("1 OR 1=1"),
+					1,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tr.TranspileFromMap(tt.input)
+			if err == nil {
+				t.Fatal("expected error for invalid json.Number literal")
+			}
+		})
+	}
+}
+
+func TestTranspileFromInterface_RejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+
+	logic := map[string]interface{}{
+		"==": []interface{}{
+			map[string]interface{}{"var": "x"},
+			json.Number("1 OR 1=1"),
+		},
+	}
+
+	_, err := tr.TranspileFromInterface(logic)
+	if err == nil {
+		t.Fatal("expected error for invalid json.Number literal")
+	}
+}
+
+func TestTranspileFromMap_CustomOperatorRejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+	_ = tr.RegisterOperatorFunc("identity", func(_ string, args []interface{}) (string, error) {
+		return args[0].(string), nil
+	})
+
+	logic := map[string]interface{}{
+		"identity": []interface{}{json.Number("1 OR 1=1")},
+	}
+	_, err := tr.TranspileFromMap(logic)
+	if err == nil {
+		t.Fatal("expected error for invalid json.Number literal in custom operator input")
 	}
 }
 
@@ -1006,7 +1075,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "if with arithmetic result",
 			input:    `{"if": [{">": [{"var": "qty"}, 100]}, {"*": [{"var": "price"}, 0.9]}, {"*": [{"var": "price"}, 1.0]}]}`,
-			expected: "WHERE CASE WHEN qty > 100 THEN (price * 0.9) ELSE (price * 1) END",
+			expected: "WHERE CASE WHEN qty > 100 THEN (price * 0.9) ELSE (price * 1.0) END",
 			hasError: false,
 		},
 
@@ -1030,7 +1099,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "in with string for substring check",
 			input:    `{"in": ["test", "this is a test string"]}`,
-			expected: "WHERE POSITION('test' IN 'this is a test string') > 0",
+			expected: "WHERE STRPOS('this is a test string', 'test') > 0",
 			hasError: false,
 		},
 
@@ -1573,6 +1642,72 @@ func TestNewTranspilerWithConfig_WithSchema(t *testing.T) {
 	_, err = tr.Transpile(`{">": [{"var": "invalid_field"}, 100]}`)
 	if err == nil {
 		t.Error("Transpile() should error for invalid field when schema is set")
+	}
+}
+
+func TestNewTranspilerWithConfig_NilSchemaPointer_UsesNoSchemaValidation(t *testing.T) {
+	var nilSchema *Schema
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect: DialectBigQuery,
+		Schema:  nilSchema,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() unexpected error: %v", err)
+	}
+
+	_, err = tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`)
+	if err == nil {
+		t.Fatal("expected invalid identifier error with nil schema")
+	}
+}
+
+func TestTranspiler_SetSchema_NilRestoresIdentifierValidation(t *testing.T) {
+	tr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() unexpected error: %v", err)
+	}
+
+	// With schema set, unusual names are allowed and validated by schema.
+	tr.SetSchema(NewSchema([]FieldSchema{
+		{Name: "bad field", Type: FieldTypeNumber},
+	}))
+
+	if _, err := tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`); err != nil {
+		t.Fatalf("Transpile() with schema unexpected error: %v", err)
+	}
+
+	// Clearing schema should restore no-schema identifier safety checks.
+	tr.SetSchema(nil)
+	if _, err := tr.Transpile(`{"==": [{"var": "bad field"}, 1]}`); err == nil {
+		t.Fatal("expected invalid identifier error after SetSchema(nil)")
+	}
+}
+
+func TestTranspile_PreservesLargeJSONIntegerLiterals(t *testing.T) {
+	tr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() unexpected error: %v", err)
+	}
+
+	sql1, err := tr.Transpile(`{"==": [{"var": "amount"}, 9223372036854775808]}`)
+	if err != nil {
+		t.Fatalf("Transpile() unexpected error: %v", err)
+	}
+	sql2, err := tr.Transpile(`{"==": [{"var": "amount"}, 9223372036854775809]}`)
+	if err != nil {
+		t.Fatalf("Transpile() unexpected error: %v", err)
+	}
+
+	want1 := "WHERE amount = 9223372036854775808"
+	want2 := "WHERE amount = 9223372036854775809"
+	if sql1 != want1 {
+		t.Errorf("sql1 = %q, want %q", sql1, want1)
+	}
+	if sql2 != want2 {
+		t.Errorf("sql2 = %q, want %q", sql2, want2)
+	}
+	if sql1 == sql2 {
+		t.Errorf("expected distinct SQL for distinct large integer literals, got %q", sql1)
 	}
 }
 

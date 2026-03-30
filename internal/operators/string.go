@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // StringOperator handles string operations like cat, substr.
@@ -515,4 +516,173 @@ func (s *StringOperator) processBooleanCoercion(args interface{}) (string, error
 
 	// Boolean coercion: check if value is truthy
 	return fmt.Sprintf("(%s IS NOT NULL AND %s != FALSE AND %s != 0 AND %s != '')", operand, operand, operand, operand), nil
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (s *StringOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("string operator %s requires at least one argument", operator)
+	}
+	switch operator {
+	case "cat":
+		return s.handleConcatenationParam(args, pc)
+	case "substr":
+		return s.handleSubstringParam(args, pc)
+	default:
+		return "", fmt.Errorf("unsupported string operator: %s", operator)
+	}
+}
+
+// handleConcatenationParam is the parameterized variant of handleConcatenation. Keep in sync.
+func (s *StringOperator) handleConcatenationParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("concatenation requires at least 1 argument")
+	}
+	for _, arg := range args {
+		if err := s.validateStringOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	operands := make([]string, len(args))
+	for i, arg := range args {
+		operand, err := s.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid concatenation argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+	return fmt.Sprintf("CONCAT(%s)", strings.Join(operands, ", ")), nil
+}
+
+// handleSubstringParam is the parameterized variant of handleSubstring. Keep in sync.
+func (s *StringOperator) handleSubstringParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return "", fmt.Errorf("substring requires 2 or 3 arguments")
+	}
+	if err := s.validateStringOperand(args[0]); err != nil {
+		return "", err
+	}
+	str, err := s.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid substring string argument: %w", err)
+	}
+	start, err := s.valueToSQLParam(args[1], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid substring start argument: %w", err)
+	}
+	startSQL := s.convertStartIndex(start)
+
+	d := dialect.DialectUnspecified
+	if s.config != nil {
+		d = s.config.GetDialect()
+	}
+	var substrFunc string
+	switch d {
+	case dialect.DialectClickHouse:
+		substrFunc = "substring"
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		substrFunc = "SUBSTR"
+	}
+
+	if len(args) == 3 {
+		length, err := s.valueToSQLParam(args[2], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid substring length argument: %w", err)
+		}
+		return fmt.Sprintf("%s(%s, %s, %s)", substrFunc, str, startSQL, length), nil
+	}
+	return fmt.Sprintf("%s(%s, %s)", substrFunc, str, startSQL), nil
+}
+
+// valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
+func (s *StringOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return s.dataOp.valueToSQLParam(pv.Value, pc)
+	}
+
+	if expr, ok := value.(map[string]interface{}); ok {
+		if varExpr, hasVar := expr[OpVar]; hasVar {
+			return s.dataOp.ToSQLParam(OpVar, []interface{}{varExpr}, pc)
+		}
+
+		if len(expr) == 1 {
+			for op, args := range expr {
+				switch op {
+				case "+", "-", "*", "/", "%":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("arithmetic operation requires array of arguments")
+					}
+					numOp := NewNumericOperator(s.config)
+					return numOp.ToSQLParam(op, argsSlice, pc)
+				case ">", ">=", "<", "<=", "==", "===", "!=", "!==":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("comparison operation requires array of arguments")
+					}
+					compOp := NewComparisonOperator(s.config)
+					return compOp.ToSQLParam(op, argsSlice, pc)
+				case "if":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("if operation requires array of arguments")
+					}
+					logOp := NewLogicalOperator(s.config)
+					return logOp.ToSQLParam("if", argsSlice, pc)
+				case "substr":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("substr requires array of arguments")
+					}
+					return s.handleSubstringParam(argsSlice, pc)
+				case "cat":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("cat requires array of arguments")
+					}
+					return s.handleConcatenationParam(argsSlice, pc)
+				case "max", "min":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("%s requires array of arguments", op)
+					}
+					numOp := NewNumericOperator(s.config)
+					return numOp.ToSQLParam(op, argsSlice, pc)
+				case "and", "or":
+					argsSlice, ok := args.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("%s requires array of arguments", op)
+					}
+					logOp := NewLogicalOperator(s.config)
+					return logOp.ToSQLParam(op, argsSlice, pc)
+				case "!":
+					argsSlice, ok := args.([]interface{})
+					if ok {
+						logOp := NewLogicalOperator(s.config)
+						return logOp.ToSQLParam("!", argsSlice, pc)
+					}
+					logOp := NewLogicalOperator(s.config)
+					return logOp.ToSQLParam("!", []interface{}{args}, pc)
+				case "!!":
+					argsSlice, ok := args.([]interface{})
+					if ok {
+						logOp := NewLogicalOperator(s.config)
+						return logOp.ToSQLParam("!!", argsSlice, pc)
+					}
+					logOp := NewLogicalOperator(s.config)
+					return logOp.ToSQLParam("!!", []interface{}{args}, pc)
+				default:
+					if s.config != nil && s.config.HasParamExpressionParser() {
+						return s.config.ParseExpressionParam(expr, "$", pc)
+					}
+					return "", fmt.Errorf("unsupported expression type in string operation: %s", op)
+				}
+			}
+		}
+	}
+
+	return s.dataOp.valueToSQLParam(value, pc)
 }

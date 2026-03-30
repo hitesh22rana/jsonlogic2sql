@@ -1,11 +1,13 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // Patterns for replacing element references in pre-processed SQL strings.
@@ -864,11 +866,393 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 // isPrimitive checks if a value is a primitive type.
 func (a *ArrayOperator) isPrimitive(value interface{}) bool {
 	switch value.(type) {
-	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number, bool:
 		return true
 	case nil:
 		return true
 	default:
 		return false
 	}
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (a *ArrayOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("array operator %s requires at least one argument", operator)
+	}
+	switch operator {
+	case "map":
+		return a.handleMapParam(args, pc)
+	case "filter":
+		return a.handleFilterParam(args, pc)
+	case "reduce":
+		return a.handleReduceParam(args, pc)
+	case "all":
+		return a.handleAllParam(args, pc)
+	case "some":
+		return a.handleSomeParam(args, pc)
+	case "none":
+		return a.handleNoneParam(args, pc)
+	case "merge":
+		return a.handleMergeParam(args, pc)
+	default:
+		return "", fmt.Errorf("unsupported array operator: %s", operator)
+	}
+}
+
+// handleMapParam is the parameterized variant of handleMap. Keep in sync.
+func (a *ArrayOperator) handleMapParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("map requires exactly 2 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("map"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid map array argument: %w", err)
+	}
+	rewritten := a.rewriteElementVars(args[1])
+	transformation, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid map transformation argument: %w", err)
+	}
+	transformation = a.replaceElementRefsInSQL(transformation)
+
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformation, array), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+	}
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+}
+
+// handleFilterParam is the parameterized variant of handleFilter. Keep in sync.
+func (a *ArrayOperator) handleFilterParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("filter requires exactly 2 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("filter"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid filter array argument: %w", err)
+	}
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid filter condition argument: %w", err)
+	}
+	condition = a.replaceElementRefsInSQL(condition)
+
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", condition, array), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	}
+	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+}
+
+// handleReduceParam is the parameterized variant of handleReduce. Keep in sync.
+func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 3 {
+		return "", fmt.Errorf("reduce requires exactly 3 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("reduce"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid reduce array argument: %w", err)
+	}
+	reducerExpr := args[1]
+	initial, err := a.valueToSQLParam(args[2], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid reduce initial argument: %w", err)
+	}
+
+	if pattern := a.detectAggregatePattern(reducerExpr); pattern != nil {
+		elemRef := ElemVar
+		if pattern.fieldSuffix != "" {
+			elemRef = ElemVar + "." + pattern.fieldSuffix
+		}
+
+		switch a.getDialect() {
+		case dialect.DialectClickHouse:
+			if pattern.fieldSuffix != "" {
+				return fmt.Sprintf("%s + coalesce(arrayReduce('%s', arrayMap(x -> x.%s, %s)), 0)",
+					initial, strings.ToLower(pattern.function), pattern.fieldSuffix, array), nil
+			}
+			return fmt.Sprintf("%s + coalesce(arrayReduce('%s', %s), 0)",
+				initial, strings.ToLower(pattern.function), array), nil
+		case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
+				initial, pattern.function, elemRef, array), nil
+		}
+		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
+			initial, pattern.function, elemRef, array), nil
+	}
+
+	rewritten := a.rewriteElementVars(reducerExpr)
+	reducerWithElem, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid reduce expression: %w", err)
+	}
+	reducerWithElem = a.replaceElementRefsInSQL(reducerWithElem)
+	reducerWithElem = replaceWithLiteral(accumulatorPattern, reducerWithElem, initial)
+
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("arrayFold((acc, elem) -> %s, %s, %s)", reducerWithElem, array, initial), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+	}
+	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+}
+
+// handleAllParam is the parameterized variant of handleAll. Keep in sync.
+func (a *ArrayOperator) handleAllParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("all requires exactly 2 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("all"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid all array argument: %w", err)
+	}
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid all condition argument: %w", err)
+	}
+	condition = a.replaceElementRefsInSQL(condition)
+
+	lengthCheck := a.config.ArrayLengthFunc(array)
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("(%s > 0 AND arrayAll(elem -> %s, %s))", lengthCheck, condition, array), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+	}
+	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+}
+
+// handleSomeParam is the parameterized variant of handleSome. Keep in sync.
+func (a *ArrayOperator) handleSomeParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("some requires exactly 2 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("some"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid some array argument: %w", err)
+	}
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid some condition argument: %w", err)
+	}
+	condition = a.replaceElementRefsInSQL(condition)
+
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("arrayExists(elem -> %s, %s)", condition, array), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	}
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+}
+
+// handleNoneParam is the parameterized variant of handleNone. Keep in sync.
+func (a *ArrayOperator) handleNoneParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("none requires exactly 2 arguments")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("none"); err != nil {
+			return "", err
+		}
+	}
+	if err := a.validateArrayOperand(args[0]); err != nil {
+		return "", err
+	}
+	array, err := a.valueToSQLParam(args[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid none array argument: %w", err)
+	}
+	rewritten := a.rewriteElementVars(args[1])
+	condition, err := a.expressionToSQLParam(rewritten, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid none condition argument: %w", err)
+	}
+	condition = a.replaceElementRefsInSQL(condition)
+
+	switch a.getDialect() {
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", condition, array), nil
+	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
+		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	}
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+}
+
+// handleMergeParam is the parameterized variant of handleMerge. Keep in sync.
+func (a *ArrayOperator) handleMergeParam(args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 1 {
+		return "", fmt.Errorf("merge requires at least 1 argument")
+	}
+	if a.config != nil {
+		if err := a.config.ValidateDialect("merge"); err != nil {
+			return "", err
+		}
+	}
+	for _, arg := range args {
+		if err := a.validateArrayOperand(arg); err != nil {
+			return "", err
+		}
+	}
+	arrays := make([]string, len(args))
+	for i, arg := range args {
+		array, err := a.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid merge array argument %d: %w", i, err)
+		}
+		arrays[i] = array
+	}
+
+	d := dialect.DialectUnspecified
+	if a.config != nil {
+		d = a.config.GetDialect()
+	}
+	switch d {
+	case dialect.DialectPostgreSQL:
+		if len(arrays) == 1 {
+			return arrays[0], nil
+		}
+		return fmt.Sprintf("(%s)", strings.Join(arrays, " || ")), nil
+	case dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectDuckDB:
+		return fmt.Sprintf("ARRAY_CONCAT(%s)", strings.Join(arrays, ", ")), nil
+	case dialect.DialectClickHouse:
+		return fmt.Sprintf("arrayConcat(%s)", strings.Join(arrays, ", ")), nil
+	case dialect.DialectUnspecified:
+		return "", fmt.Errorf("merge: dialect not specified")
+	default:
+		return "", fmt.Errorf("merge: unsupported dialect %s", d)
+	}
+}
+
+// valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
+func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return a.dataOp.valueToSQLParam(pv.Value, pc)
+	}
+
+	if expr, ok := value.(map[string]interface{}); ok {
+		if varExpr, hasVar := expr[OpVar]; hasVar {
+			return a.dataOp.ToSQLParam(OpVar, []interface{}{varExpr}, pc)
+		}
+		return a.expressionToSQLParam(value, pc)
+	}
+
+	if arr, ok := value.([]interface{}); ok {
+		elements := make([]string, len(arr))
+		for i, elem := range arr {
+			elementSQL, err := a.dataOp.valueToSQLParam(elem, pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid array element %d: %w", i, err)
+			}
+			elements[i] = elementSQL
+		}
+		return fmt.Sprintf("[%s]", strings.Join(elements, ", ")), nil
+	}
+
+	return a.dataOp.valueToSQLParam(value, pc)
+}
+
+// expressionToSQLParam is the parameterized variant of expressionToSQL. Keep in sync.
+func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := expr.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return a.expressionToSQLParam(pv.Value, pc)
+	}
+
+	if a.isPrimitive(expr) {
+		return a.dataOp.valueToSQLParam(expr, pc)
+	}
+
+	if varExpr, ok := expr.(map[string]interface{}); ok {
+		if varName, hasVar := varExpr[OpVar]; hasVar {
+			if varName == "" {
+				return ElemVar, nil
+			}
+			return a.dataOp.ToSQLParam(OpVar, []interface{}{varName}, pc)
+		}
+	}
+
+	if exprMap, ok := expr.(map[string]interface{}); ok {
+		for operator, args := range exprMap {
+			switch operator {
+			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
+				if arr, ok := args.([]interface{}); ok {
+					return a.comparisonOp.ToSQLParam(operator, arr, pc)
+				}
+			case "and", "or", "!", "!!", "if":
+				if arr, ok := args.([]interface{}); ok {
+					return a.getLogicalOperator().ToSQLParam(operator, arr, pc)
+				}
+			case "+", "-", "*", "/", "%", "max", "min":
+				if arr, ok := args.([]interface{}); ok {
+					return a.numericOp.ToSQLParam(operator, arr, pc)
+				}
+			case "map", "filter", "reduce", "all", "some", "none", "merge":
+				if arr, ok := args.([]interface{}); ok {
+					return a.ToSQLParam(operator, arr, pc)
+				}
+			default:
+				if a.config != nil && a.config.HasParamExpressionParser() {
+					return a.config.ParseExpressionParam(exprMap, "$", pc)
+				}
+				return "", fmt.Errorf("unsupported operator in array expression: %s", operator)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("invalid expression type: %T", expr)
 }

@@ -1,11 +1,13 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
 // ComparisonOperator handles comparison operators (==, ===, !=, !==, >, >=, <, <=).
@@ -156,6 +158,8 @@ func (c *ComparisonOperator) coerceValueForComparison(value interface{}, fieldNa
 	// Handles float64 (from JSON unmarshal) and all Go integer types (from TranspileFromMap)
 	if c.schema().IsStringType(fieldName) {
 		switch v := value.(type) {
+		case json.Number:
+			return v.String()
 		case float64:
 			if v == float64(int64(v)) {
 				return fmt.Sprintf("%d", int64(v))
@@ -507,6 +511,9 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 
 		// Apply type coercion based on schema for array elements
 		if leftFieldName != "" && c.schema() != nil {
+			coerced := make([]interface{}, len(arr))
+			copy(coerced, arr)
+			arr = coerced
 			for i, item := range arr {
 				arr[i] = c.coerceValueForComparison(item, leftFieldName)
 			}
@@ -525,24 +532,27 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 		return fmt.Sprintf("%s IN (%s)", leftSQL, strings.Join(values, ", ")), nil
 	}
 
-	// Check if right side is a string (string containment)
 	if str, ok := rightValue.(string); ok {
-		// Use POSITION function for string containment: POSITION(left IN right) > 0
 		rightSQL, err := c.dataOp.valueToSQL(str)
 		if err != nil {
 			return "", fmt.Errorf("invalid string in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
-	// Check if right side is a number (convert to string for containment)
 	if num, ok := rightValue.(float64); ok {
-		// Convert number to string for containment check
 		rightSQL, err := c.dataOp.valueToSQL(num)
 		if err != nil {
 			return "", fmt.Errorf("invalid number in IN operator: %w", err)
 		}
-		return fmt.Sprintf("POSITION(%s IN %s) > 0", leftSQL, rightSQL), nil
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+	if num, ok := rightValue.(json.Number); ok {
+		rightSQL, err := c.dataOp.valueToSQL(num)
+		if err != nil {
+			return "", fmt.Errorf("invalid number in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 	}
 
 	return "", fmt.Errorf("in operator requires array, variable, string, or number as second argument")
@@ -733,6 +743,494 @@ func (c *ComparisonOperator) processMinMaxExpression(op string, args interface{}
 	}
 
 	// Generate SQL based on operation
+	switch op {
+	case "max":
+		return fmt.Sprintf("GREATEST(%s)", strings.Join(operands, ", ")), nil
+	case "min":
+		return fmt.Sprintf("LEAST(%s)", strings.Join(operands, ", ")), nil
+	default:
+		return "", fmt.Errorf("unsupported min/max operation: %s", op)
+	}
+}
+
+// ToSQLParam is the parameterized variant of ToSQL. Keep in sync.
+func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) >= 2 && (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") {
+		return c.handleChainedComparisonParam(operator, args, pc)
+	}
+
+	if len(args) != 2 {
+		return "", fmt.Errorf("%s operator requires exactly 2 arguments", operator)
+	}
+
+	if operator == "in" {
+		return c.handleInParam(args[0], args[1], pc)
+	}
+
+	leftArg := args[0]
+	rightArg := args[1]
+
+	leftFieldName := c.extractFieldNameFromValue(leftArg)
+	rightFieldName := c.extractFieldNameFromValue(rightArg)
+
+	if leftFieldName != "" && rightFieldName == "" {
+		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
+		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+			return "", err
+		}
+	}
+	if rightFieldName != "" && leftFieldName == "" {
+		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
+		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
+			return "", err
+		}
+	}
+
+	leftSQL, err := c.valueToSQLParam(leftArg, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid left operand: %w", err)
+	}
+
+	rightSQL, err := c.valueToSQLParam(rightArg, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid right operand: %w", err)
+	}
+
+	isLeftNull := args[0] == nil || leftSQL == "NULL"
+	isRightNull := args[1] == nil || rightSQL == "NULL"
+
+	switch operator {
+	case "==":
+		if isLeftNull && isRightNull {
+			return "NULL IS NULL", nil
+		}
+		if isLeftNull {
+			return fmt.Sprintf("%s IS NULL", rightSQL), nil
+		}
+		if isRightNull {
+			return fmt.Sprintf("%s IS NULL", leftSQL), nil
+		}
+		return fmt.Sprintf("%s = %s", leftSQL, rightSQL), nil
+	case "===":
+		if isLeftNull && isRightNull {
+			return "NULL IS NULL", nil
+		}
+		if isLeftNull {
+			return fmt.Sprintf("%s IS NULL", rightSQL), nil
+		}
+		if isRightNull {
+			return fmt.Sprintf("%s IS NULL", leftSQL), nil
+		}
+		return fmt.Sprintf("%s = %s", leftSQL, rightSQL), nil
+	case "!=":
+		if isLeftNull && isRightNull {
+			return "NULL IS NOT NULL", nil
+		}
+		if isLeftNull {
+			return fmt.Sprintf("%s IS NOT NULL", rightSQL), nil
+		}
+		if isRightNull {
+			return fmt.Sprintf("%s IS NOT NULL", leftSQL), nil
+		}
+		return fmt.Sprintf("%s != %s", leftSQL, rightSQL), nil
+	case "!==":
+		if isLeftNull && isRightNull {
+			return "NULL IS NOT NULL", nil
+		}
+		if isLeftNull {
+			return fmt.Sprintf("%s IS NOT NULL", rightSQL), nil
+		}
+		if isRightNull {
+			return fmt.Sprintf("%s IS NOT NULL", leftSQL), nil
+		}
+		return fmt.Sprintf("%s <> %s", leftSQL, rightSQL), nil
+	case ">", ">=", "<", "<=":
+		if err := c.validateOrderingOperand(args[0], operator); err != nil {
+			return "", err
+		}
+		if err := c.validateOrderingOperand(args[1], operator); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s %s %s", leftSQL, operator, rightSQL), nil
+	default:
+		return "", fmt.Errorf("unsupported comparison operator: %s", operator)
+	}
+}
+
+// valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
+func (c *ComparisonOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return c.dataOp.valueToSQLParam(pv.Value, pc)
+	}
+
+	if varExpr, ok := value.(map[string]interface{}); ok {
+		if len(varExpr) == 1 {
+			for operator, args := range varExpr {
+				if operator == "var" {
+					if varName, ok := args.(string); ok && varName == "" {
+						return "elem", nil
+					}
+					return c.dataOp.ToSQLParam(OpVar, []interface{}{args}, pc)
+				}
+			}
+		}
+	}
+
+	if expr, ok := value.(map[string]interface{}); ok {
+		if len(expr) == 1 {
+			for op, args := range expr {
+				switch op {
+				case "+", "-", "*", "/", "%":
+					return c.processArithmeticExpressionParam(op, args, pc)
+				case ">", ">=", "<", "<=", "==", "===", "!=", "!==":
+					return c.processComparisonExpressionParam(op, args, pc)
+				case "max", "min":
+					return c.processMinMaxExpressionParam(op, args, pc)
+				case "if":
+					if arr, ok := args.([]interface{}); ok {
+						logicalOp := NewLogicalOperator(c.config)
+						return logicalOp.ToSQLParam("if", arr, pc)
+					}
+					return "", fmt.Errorf("if operator requires array arguments")
+				case "reduce", "filter", "map", "some", "all", "none", "merge":
+					if arr, ok := args.([]interface{}); ok {
+						arrayOp := NewArrayOperator(c.config)
+						return arrayOp.ToSQLParam(op, arr, pc)
+					}
+					return "", fmt.Errorf("array operator %s requires array arguments", op)
+				case "cat", "substr":
+					if arr, ok := args.([]interface{}); ok {
+						stringOp := NewStringOperator(c.config)
+						return stringOp.ToSQLParam(op, arr, pc)
+					}
+					return "", fmt.Errorf("string operator %s requires array arguments", op)
+				default:
+					if c.config != nil && c.config.HasParamExpressionParser() {
+						return c.config.ParseExpressionParam(expr, "$", pc)
+					}
+					return "", fmt.Errorf("unsupported expression type in comparison: %s", op)
+				}
+			}
+		}
+	}
+
+	if _, ok := value.([]interface{}); ok {
+		return "", fmt.Errorf("arrays should be handled by handleInParam method")
+	}
+
+	return c.dataOp.valueToSQLParam(value, pc)
+}
+
+// handleInParam is the parameterized variant of handleIn. Keep in sync.
+//
+// Unlike handleIn, leftSQL is NOT pre-generated. This method generates the
+// placeholder for the left operand after determining whether coercion is needed
+// (P2 fix) and uses the original value's Go type rather than SQL quoting to
+// distinguish string containment from array membership (P1 fix).
+func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{}, pc *params.ParamCollector) (string, error) {
+	leftFieldName := c.extractFieldNameFromValue(leftOriginal)
+
+	if varExpr, ok := rightValue.(map[string]interface{}); ok {
+		if varName, hasVar := varExpr[OpVar]; hasVar {
+			rightSQL, err := c.dataOp.ToSQLParam(OpVar, []interface{}{varName}, pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid variable in IN operator: %w", err)
+			}
+
+			var fieldName string
+			if nameStr, ok := varName.(string); ok {
+				fieldName = nameStr
+			} else if nameArr, ok := varName.([]interface{}); ok && len(nameArr) > 0 {
+				if nameStr, ok := nameArr[0].(string); ok {
+					fieldName = nameStr
+				}
+			}
+
+			if c.schema() != nil && fieldName != "" {
+				if c.schema().IsArrayType(fieldName) {
+					leftSQL, lErr := c.valueToSQLParam(leftOriginal, pc)
+					if lErr != nil {
+						return "", fmt.Errorf("invalid left operand: %w", lErr)
+					}
+					return c.arrayMembershipSQL(leftSQL, rightSQL), nil
+				} else if c.schema().IsStringType(fieldName) {
+					coercedLeft := c.coerceValueForComparison(leftOriginal, fieldName)
+					coercedLeftSQL, lErr := c.valueToSQLParam(coercedLeft, pc)
+					if lErr != nil {
+						return "", fmt.Errorf("invalid left operand after coercion: %w", lErr)
+					}
+					return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, coercedLeftSQL)), nil
+				}
+			}
+
+			// No schema: infer from the Go type of the original left value.
+			// Strings indicate string-containment; everything else is array membership.
+			// For ProcessedValue{IsSQL:true} from custom operators, mirror the
+			// non-param heuristic: treat SQL string literals ('...') as strings.
+			// When the value is a bare placeholder (e.g. @p1), look up the
+			// stored parameter type to recover the information lost during
+			// parameterization.
+			_, isLeftString := leftOriginal.(string)
+			if !isLeftString {
+				if pv, ok := leftOriginal.(ProcessedValue); ok {
+					if !pv.IsSQL {
+						isLeftString = true
+					} else if strings.HasPrefix(pv.Value, "'") && strings.HasSuffix(pv.Value, "'") {
+						isLeftString = true
+					} else if val, found := pc.ValueForPlaceholder(pv.Value); found {
+						_, isLeftString = val.(string)
+					}
+				}
+			}
+
+			leftSQL, err := c.valueToSQLParam(leftOriginal, pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid left operand: %w", err)
+			}
+			if isLeftString {
+				return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+			}
+			return c.arrayMembershipSQL(leftSQL, rightSQL), nil
+		}
+	}
+
+	// Generate leftSQL for all remaining paths (array, string, number on right side).
+	leftSQL, err := c.valueToSQLParam(leftOriginal, pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid left operand: %w", err)
+	}
+
+	if arr, ok := rightValue.([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", fmt.Errorf("in operator array cannot be empty")
+		}
+
+		if leftFieldName != "" && c.schema() != nil && c.schema().IsEnumType(leftFieldName) {
+			for _, item := range arr {
+				if err := c.validateEnumValue(item, leftFieldName); err != nil {
+					return "", err
+				}
+			}
+		}
+
+		if leftFieldName != "" && c.schema() != nil {
+			coerced := make([]interface{}, len(arr))
+			copy(coerced, arr)
+			arr = coerced
+			for i, item := range arr {
+				arr[i] = c.coerceValueForComparison(item, leftFieldName)
+			}
+		}
+
+		var values []string
+		for _, item := range arr {
+			valueSQL, err := c.dataOp.valueToSQLParam(item, pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid array element: %w", err)
+			}
+			values = append(values, valueSQL)
+		}
+
+		return fmt.Sprintf("%s IN (%s)", leftSQL, strings.Join(values, ", ")), nil
+	}
+
+	if str, ok := rightValue.(string); ok {
+		rightSQL, err := c.dataOp.valueToSQLParam(str, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid string in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+
+	if num, ok := rightValue.(float64); ok {
+		rightSQL, err := c.dataOp.valueToSQLParam(num, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid number in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+	if num, ok := rightValue.(json.Number); ok {
+		rightSQL, err := c.dataOp.valueToSQLParam(num, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid number in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+
+	return "", fmt.Errorf("in operator requires array, variable, string, or number as second argument")
+}
+
+// handleChainedComparisonParam is the parameterized variant of handleChainedComparison. Keep in sync.
+func (c *ComparisonOperator) handleChainedComparisonParam(operator string, args []interface{}, pc *params.ParamCollector) (string, error) {
+	if len(args) < 2 {
+		return "", fmt.Errorf("chained comparison requires at least 2 arguments")
+	}
+
+	for _, arg := range args {
+		if err := c.validateOrderingOperand(arg, operator); err != nil {
+			return "", err
+		}
+	}
+
+	coercedArgs := make([]interface{}, len(args))
+	copy(coercedArgs, args)
+
+	var fieldName string
+	for _, arg := range args {
+		if name := c.extractFieldNameFromValue(arg); name != "" {
+			fieldName = name
+			break
+		}
+	}
+
+	if fieldName != "" {
+		for i, arg := range coercedArgs {
+			if c.extractFieldNameFromValue(arg) == "" {
+				coercedArgs[i] = c.coerceValueForComparison(arg, fieldName)
+			}
+		}
+	}
+
+	var sqlArgs []string
+	for i, arg := range coercedArgs {
+		argSQL, err := c.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid argument %d: %w", i, err)
+		}
+		sqlArgs = append(sqlArgs, argSQL)
+	}
+
+	if len(args) == 2 {
+		return fmt.Sprintf("%s %s %s", sqlArgs[0], operator, sqlArgs[1]), nil
+	}
+
+	var conditions []string
+	for i := 0; i < len(sqlArgs)-1; i++ {
+		condition := fmt.Sprintf("%s %s %s", sqlArgs[i], operator, sqlArgs[i+1])
+		conditions = append(conditions, condition)
+	}
+
+	return fmt.Sprintf("(%s)", strings.Join(conditions, " AND ")), nil
+}
+
+// processArithmeticExpressionParam is the parameterized variant of processArithmeticExpression. Keep in sync.
+func (c *ComparisonOperator) processArithmeticExpressionParam(op string, args interface{}, pc *params.ParamCollector) (string, error) {
+	argsSlice, ok := args.([]interface{})
+	if !ok {
+		return "", fmt.Errorf("arithmetic operation requires array of arguments")
+	}
+
+	if op == "-" && len(argsSlice) == 1 {
+		operand, err := c.valueToSQLParam(argsSlice[0], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid unary minus argument: %w", err)
+		}
+		return fmt.Sprintf("(-%s)", operand), nil
+	}
+
+	if op == "+" && len(argsSlice) == 1 {
+		operand, err := c.valueToSQLParam(argsSlice[0], pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid unary plus argument: %w", err)
+		}
+		return fmt.Sprintf("CAST(%s AS NUMERIC)", operand), nil
+	}
+
+	if len(argsSlice) < 2 {
+		return "", fmt.Errorf("arithmetic operation requires at least 2 arguments")
+	}
+
+	operands := make([]string, len(argsSlice))
+	for i, arg := range argsSlice {
+		operand, err := c.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid arithmetic argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+
+	switch op {
+	case "+":
+		return fmt.Sprintf("(%s)", strings.Join(operands, " + ")), nil
+	case "-":
+		return fmt.Sprintf("(%s)", strings.Join(operands, " - ")), nil
+	case "*":
+		return fmt.Sprintf("(%s)", strings.Join(operands, " * ")), nil
+	case "/":
+		return fmt.Sprintf("(%s)", strings.Join(operands, " / ")), nil
+	case "%":
+		return fmt.Sprintf("(%s)", strings.Join(operands, " % ")), nil
+	default:
+		return "", fmt.Errorf("unsupported arithmetic operation: %s", op)
+	}
+}
+
+// processComparisonExpressionParam is the parameterized variant of processComparisonExpression. Keep in sync.
+func (c *ComparisonOperator) processComparisonExpressionParam(op string, args interface{}, pc *params.ParamCollector) (string, error) {
+	argsSlice, ok := args.([]interface{})
+	if !ok {
+		return "", fmt.Errorf("comparison operation requires array of arguments")
+	}
+
+	if len(argsSlice) != 2 {
+		return "", fmt.Errorf("comparison operation requires exactly 2 arguments")
+	}
+
+	left, err := c.valueToSQLParam(argsSlice[0], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid comparison left argument: %w", err)
+	}
+
+	right, err := c.valueToSQLParam(argsSlice[1], pc)
+	if err != nil {
+		return "", fmt.Errorf("invalid comparison right argument: %w", err)
+	}
+
+	switch op {
+	case ">":
+		return fmt.Sprintf("(%s > %s)", left, right), nil
+	case ">=":
+		return fmt.Sprintf("(%s >= %s)", left, right), nil
+	case "<":
+		return fmt.Sprintf("(%s < %s)", left, right), nil
+	case "<=":
+		return fmt.Sprintf("(%s <= %s)", left, right), nil
+	case "==":
+		return fmt.Sprintf("(%s = %s)", left, right), nil
+	case "===":
+		return fmt.Sprintf("(%s = %s)", left, right), nil
+	case "!=":
+		return fmt.Sprintf("(%s != %s)", left, right), nil
+	case "!==":
+		return fmt.Sprintf("(%s <> %s)", left, right), nil
+	default:
+		return "", fmt.Errorf("unsupported comparison operation: %s", op)
+	}
+}
+
+// processMinMaxExpressionParam is the parameterized variant of processMinMaxExpression. Keep in sync.
+func (c *ComparisonOperator) processMinMaxExpressionParam(op string, args interface{}, pc *params.ParamCollector) (string, error) {
+	argsSlice, ok := args.([]interface{})
+	if !ok {
+		return "", fmt.Errorf("min/max operation requires array of arguments")
+	}
+
+	if len(argsSlice) < 2 {
+		return "", fmt.Errorf("min/max operation requires at least 2 arguments")
+	}
+
+	operands := make([]string, len(argsSlice))
+	for i, arg := range argsSlice {
+		operand, err := c.valueToSQLParam(arg, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid min/max argument %d: %w", i, err)
+		}
+		operands[i] = operand
+	}
+
 	switch op {
 	case "max":
 		return fmt.Sprintf("GREATEST(%s)", strings.Join(operands, ", ")), nil

@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -25,10 +26,13 @@ func TestValidatePrimitives(t *testing.T) {
 	}{
 		{"number", 42, nil},
 		{"float", 3.14, nil},
+		{"json.Number integer", json.Number("123"), nil},
+		{"json.Number scientific", json.Number("1e309"), nil},
 		{"string", "hello", nil},
 		{"boolean true", true, nil},
 		{"boolean false", false, nil},
 		{"null", nil, nil},
+		{"invalid json.Number literal", json.Number("1 OR 1=1"), ValidationError{}},
 	}
 
 	for _, tt := range tests {
@@ -532,6 +536,16 @@ func TestValidateCustomOperatorArgs(t *testing.T) {
 			name:      "custom operator with single number arg",
 			input:     map[string]interface{}{"singleArgOp": 42},
 			expectErr: false,
+		},
+		{
+			name:      "custom operator with valid json.Number arg",
+			input:     map[string]interface{}{"singleArgOp": json.Number("42")},
+			expectErr: false,
+		},
+		{
+			name:      "custom operator with invalid json.Number arg",
+			input:     map[string]interface{}{"singleArgOp": json.Number("1 OR 1=1")},
+			expectErr: true,
 		},
 		{
 			name:      "custom operator with single bool arg",
