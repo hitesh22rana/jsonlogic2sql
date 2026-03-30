@@ -3,7 +3,10 @@ package validator
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 )
+
+var validJSONNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 // ValidationError represents a validation error with context.
 type ValidationError struct {
@@ -403,9 +406,11 @@ func (v *Validator) isPrimitive(value interface{}) bool {
 }
 
 func (v *Validator) isNumber(value interface{}) bool {
-	switch value.(type) {
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+	switch n := value.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		return true
+	case json.Number:
+		return validJSONNumberLiteral.MatchString(n.String())
 	}
 	return false
 }
