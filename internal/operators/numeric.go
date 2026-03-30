@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -325,6 +326,9 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 			return strconv.FormatFloat(num, 'f', -1, 64), nil
 		}
 		return n.dataOp.valueToSQL(str)
+	}
+	if num, ok := value.(json.Number); ok {
+		return num.String(), nil
 	}
 
 	// Handle var expressions and complex expressions
@@ -687,6 +691,13 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 			return pc.Add(num), nil
 		}
 		return n.dataOp.valueToSQLParam(str, pc)
+	}
+	if num, ok := value.(json.Number); ok {
+		paramValue, err := jsonNumberParamValue(num)
+		if err != nil {
+			return "", err
+		}
+		return pc.Add(paramValue), nil
 	}
 
 	if expr, ok := value.(map[string]interface{}); ok {

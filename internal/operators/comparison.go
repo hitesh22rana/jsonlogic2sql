@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -157,6 +158,8 @@ func (c *ComparisonOperator) coerceValueForComparison(value interface{}, fieldNa
 	// Handles float64 (from JSON unmarshal) and all Go integer types (from TranspileFromMap)
 	if c.schema().IsStringType(fieldName) {
 		switch v := value.(type) {
+		case json.Number:
+			return v.String()
 		case float64:
 			if v == float64(int64(v)) {
 				return fmt.Sprintf("%d", int64(v))
@@ -535,6 +538,13 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 	}
 
 	if num, ok := rightValue.(float64); ok {
+		rightSQL, err := c.dataOp.valueToSQL(num)
+		if err != nil {
+			return "", fmt.Errorf("invalid number in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+	if num, ok := rightValue.(json.Number); ok {
 		rightSQL, err := c.dataOp.valueToSQL(num)
 		if err != nil {
 			return "", fmt.Errorf("invalid number in IN operator: %w", err)
@@ -1030,6 +1040,13 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 	}
 
 	if num, ok := rightValue.(float64); ok {
+		rightSQL, err := c.dataOp.valueToSQLParam(num, pc)
+		if err != nil {
+			return "", fmt.Errorf("invalid number in IN operator: %w", err)
+		}
+		return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
+	}
+	if num, ok := rightValue.(json.Number); ok {
 		rightSQL, err := c.dataOp.valueToSQLParam(num, pc)
 		if err != nil {
 			return "", fmt.Errorf("invalid number in IN operator: %w", err)

@@ -1,8 +1,11 @@
 package parser
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -10,6 +13,11 @@ import (
 	"github.com/h22rana/jsonlogic2sql/internal/operators"
 	"github.com/h22rana/jsonlogic2sql/internal/params"
 	"github.com/h22rana/jsonlogic2sql/internal/validator"
+)
+
+const (
+	maxSafeJSONInt = int64(1<<53 - 1)
+	minSafeJSONInt = -maxSafeJSONInt
 )
 
 // CustomOperatorHandler is an interface for custom operator implementations.
@@ -441,7 +449,7 @@ func (p *Parser) primitiveToSQL(value interface{}) interface{} {
 // isPrimitive checks if a value is a primitive type.
 func (p *Parser) isPrimitive(value interface{}) bool {
 	switch value.(type) {
-	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number, bool:
 		return true
 	case nil:
 		return true
@@ -720,6 +728,22 @@ func (p *Parser) primitiveToSQLParam(value interface{}, pc *params.ParamCollecto
 	switch v := value.(type) {
 	case string:
 		return pc.Add(v)
+	case json.Number:
+		numStr := v.String()
+		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			if i >= minSafeJSONInt && i <= maxSafeJSONInt {
+				return pc.Add(float64(i))
+			}
+			return pc.Add(numStr)
+		}
+		// Preserve large integer precision in parameter values.
+		if !strings.ContainsAny(numStr, ".eE") {
+			return pc.Add(numStr)
+		}
+		if f, err := strconv.ParseFloat(numStr, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return pc.Add(f)
+		}
+		return pc.Add(numStr)
 	case bool:
 		if v {
 			return "TRUE"

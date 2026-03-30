@@ -1,8 +1,10 @@
 package jsonlogic2sql
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
@@ -227,8 +229,8 @@ func (t *Transpiler) ClearCustomOperators() {
 
 // Transpile converts a JSON Logic string to a SQL WHERE clause.
 func (t *Transpiler) Transpile(jsonLogic string) (string, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", tperrors.NewInvalidJSON(err)
 	}
 
@@ -248,12 +250,35 @@ func (t *Transpiler) TranspileFromInterface(logic interface{}) (string, error) {
 // TranspileCondition converts a JSON Logic string to a SQL condition without the WHERE keyword.
 // This is useful when you need to embed the condition in a larger query.
 func (t *Transpiler) TranspileCondition(jsonLogic string) (string, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", tperrors.NewInvalidJSON(err)
 	}
 
 	return t.parser.ParseCondition(logic)
+}
+
+// decodeJSONLogic decodes JSON using UseNumber so integer-like literals preserve
+// precision (e.g. 9223372036854775808) instead of being coerced to float64.
+func decodeJSONLogic(input string) (interface{}, error) {
+	dec := json.NewDecoder(bytes.NewBufferString(input))
+	dec.UseNumber()
+
+	var logic interface{}
+	if err := dec.Decode(&logic); err != nil {
+		return nil, err
+	}
+
+	// Reject trailing non-whitespace content.
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("invalid JSON: trailing content")
+		}
+		return nil, err
+	}
+
+	return logic, nil
 }
 
 // TranspileConditionFromMap converts a pre-parsed JSON Logic map to a SQL condition without the WHERE keyword.

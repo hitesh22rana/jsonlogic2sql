@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -865,7 +866,7 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 // isPrimitive checks if a value is a primitive type.
 func (a *ArrayOperator) isPrimitive(value interface{}) bool {
 	switch value.(type) {
-	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number, bool:
 		return true
 	case nil:
 		return true

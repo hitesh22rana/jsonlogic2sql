@@ -1,8 +1,11 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/params"
@@ -16,6 +19,11 @@ var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 type DataOperator struct {
 	config *OperatorConfig
 }
+
+const (
+	maxSafeJSInt = int64(1<<53 - 1)
+	minSafeJSInt = -maxSafeJSInt
+)
 
 // NewDataOperator creates a new data operator with optional config.
 func NewDataOperator(config *OperatorConfig) *DataOperator {
@@ -257,6 +265,12 @@ func (d *DataOperator) convertVarName(varName string) (string, error) {
 // getNumber extracts a number from an interface{} and returns it as float64.
 func (d *DataOperator) getNumber(value interface{}) (float64, error) {
 	switch v := value.(type) {
+	case json.Number:
+		n, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("not a number")
+		}
+		return n, nil
 	case float64:
 		return v, nil
 	case float32:
@@ -302,6 +316,8 @@ func (d *DataOperator) valueToSQL(value interface{}) (string, error) {
 		// Escape single quotes in strings
 		escaped := strings.ReplaceAll(v, "'", "''")
 		return fmt.Sprintf("'%s'", escaped), nil
+	case json.Number:
+		return v.String(), nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return fmt.Sprintf("%v", v), nil
 	case float32, float64:
@@ -466,6 +482,12 @@ func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollec
 	switch v := value.(type) {
 	case string:
 		return pc.Add(v), nil
+	case json.Number:
+		paramValue, err := jsonNumberParamValue(v)
+		if err != nil {
+			return "", err
+		}
+		return pc.Add(paramValue), nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return pc.Add(v), nil
 	case float32:
@@ -482,4 +504,25 @@ func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollec
 	default:
 		return "", fmt.Errorf("unsupported value type: %T", value)
 	}
+}
+
+// jsonNumberParamValue converts a json.Number into a driver-friendly bind value.
+// Integers in JS-safe range stay float64 for backward compatibility with existing
+// parameterized behavior. Large integers are preserved as strings to avoid precision loss.
+func jsonNumberParamValue(num json.Number) (interface{}, error) {
+	numStr := num.String()
+	if isIntegerLiteral(numStr) {
+		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			if i >= minSafeJSInt && i <= maxSafeJSInt {
+				return float64(i), nil
+			}
+			return numStr, nil
+		}
+		// Integer overflows int64: preserve exact value as string.
+		return numStr, nil
+	}
+	if f, err := strconv.ParseFloat(numStr, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return f, nil
+	}
+	return nil, fmt.Errorf("invalid json number: %s", numStr)
 }

@@ -1,8 +1,6 @@
 package jsonlogic2sql
 
 import (
-	"encoding/json"
-
 	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
 	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
@@ -14,8 +12,8 @@ type QueryParam = params.QueryParam
 // TranspileParameterized converts a JSON Logic string to a SQL WHERE clause
 // with bind parameter placeholders instead of inlined literals.
 func (t *Transpiler) TranspileParameterized(jsonLogic string) (string, []QueryParam, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", nil, tperrors.NewInvalidJSON(err)
 	}
 	return t.parser.ParseParameterized(logic)
@@ -36,8 +34,8 @@ func (t *Transpiler) TranspileParameterizedFromInterface(logic interface{}) (str
 // TranspileConditionParameterized converts a JSON Logic string to a SQL condition
 // (without the WHERE keyword) with bind parameter placeholders.
 func (t *Transpiler) TranspileConditionParameterized(jsonLogic string) (string, []QueryParam, error) {
-	var logic interface{}
-	if err := json.Unmarshal([]byte(jsonLogic), &logic); err != nil {
+	logic, err := decodeJSONLogic(jsonLogic)
+	if err != nil {
 		return "", nil, tperrors.NewInvalidJSON(err)
 	}
 	return t.parser.ParseConditionParameterized(logic)
