@@ -140,7 +140,10 @@ func transpileParameterized(_ js.Value, args []js.Value) interface{} {
 		}
 		return errResult
 	}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return map[string]interface{}{"error": "failed to encode params: " + err.Error()}
+	}
 	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
 }
 
@@ -161,7 +164,10 @@ func transpileConditionParameterized(_ js.Value, args []js.Value) interface{} {
 	if err != nil {
 		return map[string]interface{}{"error": err.Error()}
 	}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return map[string]interface{}{"error": "failed to encode params: " + err.Error()}
+	}
 	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
 }
 
@@ -182,7 +188,10 @@ func quickTranspileParameterized(_ js.Value, args []js.Value) interface{} {
 	if err != nil {
 		return map[string]interface{}{"error": err.Error()}
 	}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return map[string]interface{}{"error": "failed to encode params: " + err.Error()}
+	}
 	return map[string]interface{}{"sql": sql, "params": string(paramsJSON)}
 }
 
@@ -237,7 +246,10 @@ func getSamples(_ js.Value, _ []js.Value) interface{} {
 		{"name": "Nested arithmetic", "jsonLogic": `{">": [{"+": [{"var": "base"}, {"*": [{"var": "bonus"}, 0.1]}]}, 1000]}`},
 		{"name": "Conditional (if)", "jsonLogic": `{"if": [{">": [{"var": "age"}, 18]}, "adult", "minor"]}`},
 	}
-	data, _ := json.Marshal(samples)
+	data, err := json.Marshal(samples)
+	if err != nil {
+		return "[]"
+	}
 	return string(data)
 }
 
@@ -246,17 +258,17 @@ func main() {
 
 	// Register all functions on the global jsonlogic2sql object
 	jsObj := map[string]interface{}{
-		"newTranspiler":                     js.FuncOf(newTranspiler),
-		"setSchema":                         js.FuncOf(setSchema),
-		"transpile":                         js.FuncOf(transpile),
-		"transpileCondition":                js.FuncOf(transpileCondition),
-		"transpileParameterized":            js.FuncOf(transpileParameterized),
-		"transpileConditionParameterized":   js.FuncOf(transpileConditionParameterized),
-		"quickTranspile":                    js.FuncOf(quickTranspile),
-		"quickTranspileParameterized":       js.FuncOf(quickTranspileParameterized),
-		"destroyTranspiler":                 js.FuncOf(destroyTranspiler),
-		"getDialects":                       js.FuncOf(getDialects),
-		"getSamples":                        js.FuncOf(getSamples),
+		"newTranspiler":                   js.FuncOf(newTranspiler),
+		"setSchema":                       js.FuncOf(setSchema),
+		"transpile":                       js.FuncOf(transpile),
+		"transpileCondition":              js.FuncOf(transpileCondition),
+		"transpileParameterized":          js.FuncOf(transpileParameterized),
+		"transpileConditionParameterized": js.FuncOf(transpileConditionParameterized),
+		"quickTranspile":                  js.FuncOf(quickTranspile),
+		"quickTranspileParameterized":     js.FuncOf(quickTranspileParameterized),
+		"destroyTranspiler":               js.FuncOf(destroyTranspiler),
+		"getDialects":                     js.FuncOf(getDialects),
+		"getSamples":                      js.FuncOf(getSamples),
 	}
 
 	js.Global().Set("jsonlogic2sql", js.ValueOf(jsObj))
