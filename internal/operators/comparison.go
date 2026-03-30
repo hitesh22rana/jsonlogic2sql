@@ -957,13 +957,18 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 			// Strings indicate string-containment; everything else is array membership.
 			// For ProcessedValue{IsSQL:true} from custom operators, mirror the
 			// non-param heuristic: treat SQL string literals ('...') as strings.
+			// When the value is a bare placeholder (e.g. @p1), look up the
+			// stored parameter type to recover the information lost during
+			// parameterization.
 			_, isLeftString := leftOriginal.(string)
 			if !isLeftString {
 				if pv, ok := leftOriginal.(ProcessedValue); ok {
 					if !pv.IsSQL {
 						isLeftString = true
-					} else {
-						isLeftString = strings.HasPrefix(pv.Value, "'") && strings.HasSuffix(pv.Value, "'")
+					} else if strings.HasPrefix(pv.Value, "'") && strings.HasSuffix(pv.Value, "'") {
+						isLeftString = true
+					} else if val, found := pc.ValueForPlaceholder(pv.Value); found {
+						_, isLeftString = val.(string)
 					}
 				}
 			}

@@ -91,6 +91,20 @@ func (pc *ParamCollector) Style() PlaceholderStyle {
 	return pc.style
 }
 
+// ValueForPlaceholder returns the stored value for a given placeholder string.
+// Returns the value and true if found, or nil and false otherwise.
+// This allows callers to inspect the Go type of a parameterized value when the
+// placeholder token alone is insufficient to determine semantics (e.g.,
+// distinguishing string containment from array membership in the "in" operator).
+func (pc *ParamCollector) ValueForPlaceholder(placeholder string) (interface{}, bool) {
+	for i, p := range pc.params {
+		if formatPlaceholder(i+1, p.Name, pc.style) == placeholder {
+			return p.Value, true
+		}
+	}
+	return nil, false
+}
+
 // ValidatePlaceholderRefs is a best-effort safety guard that scans the final
 // SQL for each collected placeholder using style-specific boundary patterns.
 // It returns E350 ErrUnreferencedPlaceholder if any placeholder is not found,
