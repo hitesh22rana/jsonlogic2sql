@@ -693,11 +693,7 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 		return n.dataOp.valueToSQLParam(str, pc)
 	}
 	if num, ok := value.(json.Number); ok {
-		paramValue, err := jsonNumberParamValue(num)
-		if err != nil {
-			return "", err
-		}
-		return pc.Add(paramValue), nil
+		return pc.Add(jsonNumberParamValue(num)), nil
 	}
 
 	if expr, ok := value.(map[string]interface{}); ok {

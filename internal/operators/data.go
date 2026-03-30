@@ -483,11 +483,7 @@ func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollec
 	case string:
 		return pc.Add(v), nil
 	case json.Number:
-		paramValue, err := jsonNumberParamValue(v)
-		if err != nil {
-			return "", err
-		}
-		return pc.Add(paramValue), nil
+		return pc.Add(jsonNumberParamValue(v)), nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return pc.Add(v), nil
 	case float32:
@@ -508,21 +504,39 @@ func (d *DataOperator) valueToSQLParam(value interface{}, pc *params.ParamCollec
 
 // jsonNumberParamValue converts a json.Number into a driver-friendly bind value.
 // Integers in JS-safe range stay float64 for backward compatibility with existing
-// parameterized behavior. Large integers are preserved as strings to avoid precision loss.
-func jsonNumberParamValue(num json.Number) (interface{}, error) {
+// parameterized behavior. Large integers and out-of-range floats are preserved as
+// strings to avoid precision loss, matching the inline path's verbatim behavior.
+func jsonNumberParamValue(num json.Number) interface{} {
 	numStr := num.String()
 	if isIntegerLiteral(numStr) {
 		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
 			if i >= minSafeJSInt && i <= maxSafeJSInt {
-				return float64(i), nil
+				return float64(i)
 			}
-			return numStr, nil
+			return numStr
 		}
-		// Integer overflows int64: preserve exact value as string.
-		return numStr, nil
+		return numStr
 	}
 	if f, err := strconv.ParseFloat(numStr, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
-		return f, nil
+		if f == 0 && hasNonZeroSignificand(numStr) {
+			return numStr
+		}
+		return f
 	}
-	return nil, fmt.Errorf("invalid json number: %s", numStr)
+	return numStr
+}
+
+// hasNonZeroSignificand reports whether a numeric string has a non-zero digit
+// in its significand (the part before 'e'/'E'). Used to detect float64
+// underflow where ParseFloat returns 0 but the original value is non-zero.
+func hasNonZeroSignificand(s string) bool {
+	for _, c := range s {
+		if c == 'e' || c == 'E' {
+			break
+		}
+		if c >= '1' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }

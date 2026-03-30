@@ -741,6 +741,11 @@ func (p *Parser) primitiveToSQLParam(value interface{}, pc *params.ParamCollecto
 			return pc.Add(numStr)
 		}
 		if f, err := strconv.ParseFloat(numStr, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			// Preserve tiny non-zero numbers that underflow to 0 in float64
+			// (e.g. 1e-400) to avoid silently changing semantics.
+			if f == 0 && hasNonZeroSignificand(numStr) {
+				return pc.Add(numStr)
+			}
 			return pc.Add(f)
 		}
 		return pc.Add(numStr)
@@ -759,4 +764,19 @@ func (p *Parser) primitiveToSQLParam(value interface{}, pc *params.ParamCollecto
 	default:
 		return pc.Add(v)
 	}
+}
+
+// hasNonZeroSignificand reports whether a numeric string has a non-zero digit
+// in its significand (the part before 'e'/'E'). Used to detect float64
+// underflow where ParseFloat returns 0 but the original value is non-zero.
+func hasNonZeroSignificand(s string) bool {
+	for _, c := range s {
+		if c == 'e' || c == 'E' {
+			break
+		}
+		if c >= '1' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }
