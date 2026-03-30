@@ -208,6 +208,8 @@ for _, p := range params {
 
 Custom operators receive SQL fragment arguments that may contain placeholders. The contract is the same as with inline mode: custom operators **must** include all provided arguments in their output SQL. Dropping an argument is a semantic bug that, in parameterized mode, additionally triggers an `E350 ErrUnreferencedPlaceholder` error.
 
+Custom operators must also keep placeholders as SQL expressions, not quoted string literals. For example, use `CONCAT(@p1, '%')`, not `'@p1%'`. If a custom operator emits a placeholder inside a quoted SQL string literal, transpilation now fails with `E102 ErrCustomOperatorFailed`.
+
 ```go
 // Good: all args used
 transpiler.RegisterOperatorFunc("double", func(op string, args []interface{}) (string, error) {
