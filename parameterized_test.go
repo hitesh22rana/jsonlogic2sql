@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -899,6 +900,63 @@ func TestTranspileParameterized_CustomOperatorPlaceholderAsExpressionAllowed(t *
 		t.Fatalf("SQL = %q, want %q", sql, "WHERE CONCAT('x-', @p1)")
 	}
 	assertParams(t, params, []QueryParam{{Name: "p1", Value: "hello"}})
+}
+
+func TestTranspileParameterized_CustomOperatorPlaceholderSemantics_AllDialects(t *testing.T) {
+	tests := []struct {
+		name        string
+		dialect     Dialect
+		placeholder string
+	}{
+		{name: "bigquery", dialect: DialectBigQuery, placeholder: "@p1"},
+		{name: "spanner", dialect: DialectSpanner, placeholder: "@p1"},
+		{name: "clickhouse", dialect: DialectClickHouse, placeholder: "@p1"},
+		{name: "postgresql", dialect: DialectPostgreSQL, placeholder: "$1"},
+		{name: "duckdb", dialect: DialectDuckDB, placeholder: "$1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+
+			_ = tp.RegisterOperatorFunc("identity", func(_ string, args []any) (string, error) {
+				return fmt.Sprintf("%s", args[0]), nil
+			})
+			_ = tp.RegisterOperatorFunc("quote", func(_ string, args []any) (string, error) {
+				return fmt.Sprintf("'%s'", args[0]), nil
+			})
+
+			// Valid: placeholder stays as SQL expression and is bound.
+			sql, params, err := tp.TranspileParameterized(`{"identity": ["hello"]}`)
+			if err != nil {
+				t.Fatalf("TranspileParameterized(identity) error = %v", err)
+			}
+			wantSQL := "WHERE " + tt.placeholder
+			if sql != wantSQL {
+				t.Fatalf("identity SQL = %q, want %q", sql, wantSQL)
+			}
+			assertParams(t, params, []QueryParam{{Name: "p1", Value: "hello"}})
+
+			// Invalid: quoted placeholder must be rejected.
+			_, _, err = tp.TranspileParameterized(`{"quote": ["hello"]}`)
+			if err == nil {
+				t.Fatal("expected error for quoted placeholder in custom operator SQL")
+			}
+			tpErr, ok := AsTranspileError(err)
+			if !ok {
+				t.Fatalf("expected TranspileError, got %T (%v)", err, err)
+			}
+			if tpErr.Code != ErrCustomOperatorFailed {
+				t.Fatalf("error code = %q, want %q", tpErr.Code, ErrCustomOperatorFailed)
+			}
+			if !strings.Contains(tpErr.Message, tt.placeholder) {
+				t.Fatalf("error message = %q, want to contain placeholder %q", tpErr.Message, tt.placeholder)
+			}
+		})
+	}
 }
 
 func assertParams(t *testing.T, got, want []QueryParam) {

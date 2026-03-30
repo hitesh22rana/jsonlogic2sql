@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -327,6 +328,10 @@ func TestDataOperator_valueToSQL(t *testing.T) {
 		{"null", nil, "NULL", false},
 		{"int64", int64(123), "123", false},
 		{"float32", float32(1.5), "1.5", false},
+		{"json.Number integer", json.Number("123"), "123", false},
+		{"json.Number float", json.Number("1.25"), "1.25", false},
+		{"json.Number scientific", json.Number("1e3"), "1e3", false},
+		{"json.Number invalid SQL fragment", json.Number("1 OR 1=1"), "", true},
 		{"unsupported type", []string{"a"}, "", true},
 	}
 
@@ -806,6 +811,20 @@ func TestDataOperator_valueToSQLParam(t *testing.T) {
 			expectedSQL: "@p1",
 			wantParams:  []params.QueryParam{{Name: "p1", Value: "hello"}},
 			hasError:    false,
+		},
+		{
+			name:        "json.Number valid",
+			input:       json.Number("123"),
+			expectedSQL: "@p1",
+			wantParams:  []params.QueryParam{{Name: "p1", Value: float64(123)}},
+			hasError:    false,
+		},
+		{
+			name:        "json.Number invalid SQL fragment",
+			input:       json.Number("1 OR 1=1"),
+			expectedSQL: "",
+			wantParams:  nil,
+			hasError:    true,
 		},
 		{
 			name:        "unsupported type",

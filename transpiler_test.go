@@ -1,6 +1,7 @@
 package jsonlogic2sql
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -191,6 +192,59 @@ func TestTranspiler_TranspileFromInterface(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTranspileFromMap_RejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+
+	tests := []struct {
+		name  string
+		input map[string]interface{}
+	}{
+		{
+			name: "comparison literal injection",
+			input: map[string]interface{}{
+				"==": []interface{}{
+					map[string]interface{}{"var": "x"},
+					json.Number("1 OR 1=1"),
+				},
+			},
+		},
+		{
+			name: "numeric expression literal injection",
+			input: map[string]interface{}{
+				"+": []interface{}{
+					json.Number("1 OR 1=1"),
+					1,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tr.TranspileFromMap(tt.input)
+			if err == nil {
+				t.Fatal("expected error for invalid json.Number literal")
+			}
+		})
+	}
+}
+
+func TestTranspileFromInterface_RejectsInvalidJSONNumberLiterals(t *testing.T) {
+	tr, _ := NewTranspiler(DialectBigQuery)
+
+	logic := map[string]interface{}{
+		"==": []interface{}{
+			map[string]interface{}{"var": "x"},
+			json.Number("1 OR 1=1"),
+		},
+	}
+
+	_, err := tr.TranspileFromInterface(logic)
+	if err == nil {
+		t.Fatal("expected error for invalid json.Number literal")
 	}
 }
 
