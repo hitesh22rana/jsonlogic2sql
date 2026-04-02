@@ -11,6 +11,7 @@ A Go library that converts JSON Logic expressions into SQL. This library provide
 - **Schema Validation**: Optional field schema for strict column validation
 - **Structured Errors**: Error codes and JSONPath locations for debugging
 - **Regression Matrices**: Cross-dialect schema-aware/schema-less matrix tests for nested built-in and custom operator flows
+- **Array Scope Safety**: Nested array operators keep inner/outer element aliases distinct where required
 - **Library & CLI**: Both programmatic API and interactive REPL
 
 ## Quick Start

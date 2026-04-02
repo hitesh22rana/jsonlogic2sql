@@ -86,6 +86,9 @@ The project includes comprehensive tests:
 - **168 REPL test cases** for integration testing
 - Full coverage for all operators and dialects
 - Cross-dialect regression matrices for nested built-in/custom flows:
+  - `array_edge_matrix_test.go`
+  - `array_schema_alias_regression_test.go`
+  - `custom_operator_array_edge_matrix_test.go`
   - `comparison_logical_numeric_matrix_test.go`
   - `data_access_matrix_test.go`
 
