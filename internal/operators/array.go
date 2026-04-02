@@ -569,7 +569,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	// accumulator substitution must happen LAST so that the safety net
 	// doesn't corrupt initial values containing "current"/"item" field names.
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQL(rewritten)
+	reducerWithElem, err := a.expressionToSQLWithContext(rewritten, true)
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -925,13 +925,17 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 
 // expressionToSQL converts a JSON Logic expression to SQL.
 func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
+	return a.expressionToSQLWithContext(expr, false)
+}
+
+func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumulator bool) (string, error) {
 	// Handle ProcessedValue (pre-processed SQL from parser)
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
 		// It's a literal, recursively convert it
-		return a.expressionToSQL(pv.Value)
+		return a.expressionToSQLWithContext(pv.Value, allowAccumulator)
 	}
 
 	// Handle primitive values
@@ -955,7 +959,7 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperator(arr)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -968,7 +972,7 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperator(arr)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -981,7 +985,7 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperator(arr)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1007,7 +1011,7 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 				// Try to use the expression parser callback for unknown operators
 				// This enables support for custom operators in nested contexts
 				if a.config != nil && a.config.HasExpressionParser() {
-					rewrittenExpr, err := a.rewriteScopedVarsForOperator(exprMap)
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorWithContext(exprMap, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1162,15 +1166,12 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 	return "", false, nil
 }
 
-// rewriteScopedVarsForOperator converts array-scope vars (item/current/elem/"" and
-// reduce accumulator) into SQL ProcessedValue nodes before delegating to other
-// operators. This prevents schema validation from rejecting internal aliases.
-func (a *ArrayOperator) rewriteScopedVarsForOperator(expr interface{}) (interface{}, error) {
+func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}, allowAccumulator bool) (interface{}, error) {
 	switch e := expr.(type) {
 	case map[string]interface{}:
 		if len(e) == 1 {
 			if varName, hasVar := e[OpVar]; hasVar {
-				if varName == AccumulatorVar {
+				if allowAccumulator && varName == AccumulatorVar {
 					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
 				}
 				if sql, handled, err := a.arrayScopeVarToSQL(varName); handled || err != nil {
@@ -1190,14 +1191,14 @@ func (a *ArrayOperator) rewriteScopedVarsForOperator(expr interface{}) (interfac
 					newArgs := make([]interface{}, len(arr))
 					copy(newArgs, arr)
 					if len(newArgs) > 0 {
-						rewritten, err := a.rewriteScopedVarsForOperator(arr[0])
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContext(arr[0], allowAccumulator)
 						if err != nil {
 							return nil, err
 						}
 						newArgs[0] = rewritten
 					}
 					if opName == OpReduce && len(newArgs) > 2 {
-						rewritten, err := a.rewriteScopedVarsForOperator(arr[2])
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContext(arr[2], allowAccumulator)
 						if err != nil {
 							return nil, err
 						}
@@ -1209,7 +1210,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperator(expr interface{}) (interfac
 		}
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperator(v)
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContext(v, allowAccumulator)
 			if err != nil {
 				return nil, err
 			}
@@ -1220,7 +1221,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperator(expr interface{}) (interfac
 	case []interface{}:
 		result := make([]interface{}, len(e))
 		for i, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperator(v)
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContext(v, allowAccumulator)
 			if err != nil {
 				return nil, err
 			}
@@ -1482,7 +1483,7 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 	}
 
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQLParam(rewritten, pc)
+	reducerWithElem, err := a.expressionToSQLParamWithContext(rewritten, pc, true)
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -1682,11 +1683,19 @@ func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamColle
 
 // expressionToSQLParam is the parameterized variant of expressionToSQL. Keep in sync.
 func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamCollector) (string, error) {
+	return a.expressionToSQLParamWithContext(expr, pc, false)
+}
+
+func (a *ArrayOperator) expressionToSQLParamWithContext(
+	expr interface{},
+	pc *params.ParamCollector,
+	allowAccumulator bool,
+) (string, error) {
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
-		return a.expressionToSQLParam(pv.Value, pc)
+		return a.expressionToSQLParamWithContext(pv.Value, pc, allowAccumulator)
 	}
 
 	if a.isPrimitive(expr) {
@@ -1707,7 +1716,7 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParam(arr, pc)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1720,7 +1729,7 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParam(arr, pc)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1733,7 +1742,7 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParam(arr, pc)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1756,7 +1765,7 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 				}
 			default:
 				if a.config != nil && a.config.HasParamExpressionParser() {
-					rewrittenExpr, err := a.rewriteScopedVarsForOperatorParam(exprMap, pc)
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorParamWithContext(exprMap, pc, allowAccumulator)
 					if err != nil {
 						return "", err
 					}
@@ -1847,14 +1856,16 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 	return "", false, nil
 }
 
-// rewriteScopedVarsForOperatorParam is the parameterized variant of
-// rewriteScopedVarsForOperator. Keep in sync.
-func (a *ArrayOperator) rewriteScopedVarsForOperatorParam(expr interface{}, pc *params.ParamCollector) (interface{}, error) {
+func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContext(
+	expr interface{},
+	pc *params.ParamCollector,
+	allowAccumulator bool,
+) (interface{}, error) {
 	switch e := expr.(type) {
 	case map[string]interface{}:
 		if len(e) == 1 {
 			if varName, hasVar := e[OpVar]; hasVar {
-				if varName == AccumulatorVar {
+				if allowAccumulator && varName == AccumulatorVar {
 					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
 				}
 				if sql, handled, err := a.arrayScopeVarToSQLParam(varName, pc); handled || err != nil {
@@ -1874,14 +1885,14 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParam(expr interface{}, pc *
 					newArgs := make([]interface{}, len(arr))
 					copy(newArgs, arr)
 					if len(newArgs) > 0 {
-						rewritten, err := a.rewriteScopedVarsForOperatorParam(arr[0], pc)
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(arr[0], pc, allowAccumulator)
 						if err != nil {
 							return nil, err
 						}
 						newArgs[0] = rewritten
 					}
 					if opName == OpReduce && len(newArgs) > 2 {
-						rewritten, err := a.rewriteScopedVarsForOperatorParam(arr[2], pc)
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(arr[2], pc, allowAccumulator)
 						if err != nil {
 							return nil, err
 						}
@@ -1893,7 +1904,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParam(expr interface{}, pc *
 		}
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorParam(v, pc)
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(v, pc, allowAccumulator)
 			if err != nil {
 				return nil, err
 			}
@@ -1904,7 +1915,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParam(expr interface{}, pc *
 	case []interface{}:
 		result := make([]interface{}, len(e))
 		for i, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorParam(v, pc)
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(v, pc, allowAccumulator)
 			if err != nil {
 				return nil, err
 			}
