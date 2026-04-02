@@ -27,6 +27,7 @@ var (
 	itemPattern        = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(ItemVar) + `\b`)
 	currentPattern     = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(CurrentVar) + `\b`)
 	accumulatorPattern = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
+	safeIdentifierExpr = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -1118,24 +1119,43 @@ func (a *ArrayOperator) mapElementVarName(varStr string) string {
 	return varStr
 }
 
+func (a *ArrayOperator) validateArrayScopeIdentifier(name string) error {
+	if !safeIdentifierExpr.MatchString(name) {
+		return fmt.Errorf("invalid identifier %q: must match [a-zA-Z_][a-zA-Z0-9_.]*", name)
+	}
+	return nil
+}
+
 // mapArrayScopeVar maps array-scope variable names to the current element alias.
 // It handles direct elem references and JSONLogic aliases ("", "item", "current").
-func (a *ArrayOperator) mapArrayScopeVar(varName string) (string, bool) {
+func (a *ArrayOperator) mapArrayScopeVar(varName string) (string, bool, error) {
 	if varName == "" {
-		return a.elemAlias(), true
+		return a.elemAlias(), true, nil
 	}
 	if a.isVisibleElemPath(varName) {
-		return varName, true
+		if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			return "", true, err
+		}
+		return varName, true, nil
 	}
 	mapped := a.mapElementVarName(varName)
-	return mapped, mapped != varName
+	if mapped != varName {
+		if err := a.validateArrayScopeIdentifier(mapped); err != nil {
+			return "", true, err
+		}
+		return mapped, true, nil
+	}
+	return mapped, false, nil
 }
 
 // arrayScopeVarToSQL resolves array-scope var references without schema validation.
 // This keeps item/current/elem aliases working inside array lambdas when schema mode is enabled.
 func (a *ArrayOperator) arrayScopeVarToSQL(varExpr interface{}) (string, bool, error) {
 	if varName, ok := varExpr.(string); ok {
-		mapped, handled := a.mapArrayScopeVar(varName)
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
 		if handled {
 			return mapped, true, nil
 		}
@@ -1150,7 +1170,10 @@ func (a *ArrayOperator) arrayScopeVarToSQL(varExpr interface{}) (string, bool, e
 		if !ok {
 			return "", false, nil
 		}
-		mapped, handled := a.mapArrayScopeVar(varName)
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
 		if !handled {
 			return "", false, nil
 		}
@@ -1865,7 +1888,10 @@ func (a *ArrayOperator) expressionToSQLParamWithContextAndPath(
 // arrayScopeVarToSQLParam is the parameterized variant of arrayScopeVarToSQL. Keep in sync.
 func (a *ArrayOperator) arrayScopeVarToSQLParam(varExpr interface{}, pc *params.ParamCollector) (string, bool, error) {
 	if varName, ok := varExpr.(string); ok {
-		mapped, handled := a.mapArrayScopeVar(varName)
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
 		if handled {
 			return mapped, true, nil
 		}
@@ -1880,7 +1906,10 @@ func (a *ArrayOperator) arrayScopeVarToSQLParam(varExpr interface{}, pc *params.
 		if !ok {
 			return "", false, nil
 		}
-		mapped, handled := a.mapArrayScopeVar(varName)
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
 		if !handled {
 			return "", false, nil
 		}
