@@ -1199,6 +1199,9 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 			return a.elemAlias(), true, nil
 		}
 		if a.isVisibleElemPath(varName) {
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
 			return varName, true, nil
 		}
 		return "", false, nil
@@ -1217,6 +1220,9 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 		case varName == "":
 			mapped = a.elemAlias()
 		case a.isVisibleElemPath(varName):
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
 			mapped = varName
 		default:
 			return "", false, nil
@@ -1933,6 +1939,9 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 			return a.elemAlias(), true, nil
 		}
 		if a.isVisibleElemPath(varName) {
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
 			return varName, true, nil
 		}
 		return "", false, nil
@@ -1951,6 +1960,9 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 		case varName == "":
 			mapped = a.elemAlias()
 		case a.isVisibleElemPath(varName):
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
 			mapped = varName
 		default:
 			return "", false, nil

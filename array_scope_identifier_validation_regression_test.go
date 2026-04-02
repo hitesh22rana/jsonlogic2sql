@@ -15,6 +15,15 @@ func decodeLogicMapForArrayScopeIDTest(t *testing.T, logic string) map[string]in
 	return m
 }
 
+func decodeLogicAnyForArrayScopeIDTest(t *testing.T, logic string) interface{} {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal([]byte(logic), &v); err != nil {
+		t.Fatalf("json.Unmarshal(any) failed: %v", err)
+	}
+	return v
+}
+
 func assertInvalidIdentifierError(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -53,6 +62,18 @@ func TestArrayScopeIdentifierValidationRejectsMaliciousPaths_AllDialects(t *test
 			name:  "map direct elem dotted payload",
 			logic: `{"map":[{"var":"bag.numbers"},{"var":"elem.x) OR 1=1 --"}]}`,
 		},
+		{
+			name:  "map source internal elem dotted payload",
+			logic: `{"map":[{"var":"elem.x) OR 1=1 --"},{"var":"item"}]}`,
+		},
+		{
+			name:  "reduce initial internal elem dotted payload",
+			logic: `{"reduce":[{"var":"bag.numbers"},{"+":[{"var":"accumulator"},{"var":"current"}]},{"var":"elem.x) OR 1=1 --"}]}`,
+		},
+		{
+			name:  "map source internal elem dotted payload with default array-form var",
+			logic: `{"map":[{"var":["elem.x) OR 1=1 --",[]]},{"var":"item"}]}`,
+		},
 	}
 
 	modes := []struct {
@@ -77,6 +98,7 @@ func TestArrayScopeIdentifierValidationRejectsMaliciousPaths_AllDialects(t *test
 					for _, tc := range cases {
 						t.Run(tc.name, func(t *testing.T) {
 							m := decodeLogicMapForArrayScopeIDTest(t, tc.logic)
+							logicAny := decodeLogicAnyForArrayScopeIDTest(t, tc.logic)
 
 							sql, err := tr.Transpile(tc.logic)
 							assertInvalidIdentifierError(t, err)
@@ -93,7 +115,13 @@ func TestArrayScopeIdentifierValidationRejectsMaliciousPaths_AllDialects(t *test
 							_, err = tr.TranspileFromMap(m)
 							assertInvalidIdentifierError(t, err)
 
+							_, err = tr.TranspileFromInterface(logicAny)
+							assertInvalidIdentifierError(t, err)
+
 							_, _, err = tr.TranspileParameterizedFromMap(m)
+							assertInvalidIdentifierError(t, err)
+
+							_, _, err = tr.TranspileParameterizedFromInterface(logicAny)
 							assertInvalidIdentifierError(t, err)
 						})
 					}
