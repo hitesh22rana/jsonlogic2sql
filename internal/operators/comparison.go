@@ -433,6 +433,83 @@ func (c *ComparisonOperator) valueToSQL(value interface{}) (string, error) {
 	return c.dataOp.valueToSQL(value)
 }
 
+func isSQLStringLiteral(sql string) bool {
+	trimmed := strings.TrimSpace(sql)
+	return len(trimmed) >= 2 && strings.HasPrefix(trimmed, "'") && strings.HasSuffix(trimmed, "'")
+}
+
+// isStringLikeInOperandNoSchema classifies whether the left operand of "in"
+// should be treated as a string in schema-less mode.
+//
+// This is intentionally heuristic (not a full type system). It covers:
+// - literal strings
+// - SQL string literals
+// - ProcessedValue placeholders bound to string params
+// - expressions rooted in known string-producing operators (cat/substr/if branches).
+func (c *ComparisonOperator) isStringLikeInOperandNoSchema(
+	value interface{},
+	pc *params.ParamCollector,
+	depth int,
+) bool {
+	// Keep recursive inference bounded on malformed/hostile input.
+	if depth > 20 {
+		return false
+	}
+
+	switch v := value.(type) {
+	case string:
+		return true
+	case ProcessedValue:
+		if !v.IsSQL {
+			return true
+		}
+		if isSQLStringLiteral(v.Value) {
+			return true
+		}
+		if pc != nil {
+			if paramValue, found := pc.ValueForPlaceholder(strings.TrimSpace(v.Value)); found {
+				_, ok := paramValue.(string)
+				return ok
+			}
+		}
+		return false
+	case map[string]interface{}:
+		if len(v) != 1 {
+			return false
+		}
+		for op, args := range v {
+			switch op {
+			case OpCat:
+				arr, ok := args.([]interface{})
+				return ok && len(arr) > 0
+			case OpSubstr:
+				arr, ok := args.([]interface{})
+				return ok && len(arr) >= 2 && len(arr) <= 3
+			case OpIf:
+				arr, ok := args.([]interface{})
+				if !ok || len(arr) < 3 {
+					return false
+				}
+				// Branch results are at odd indexes and (for odd-length forms)
+				// the trailing else value at the last index.
+				for i := 1; i < len(arr); i += 2 {
+					if !c.isStringLikeInOperandNoSchema(arr[i], pc, depth+1) {
+						return false
+					}
+				}
+				if len(arr)%2 == 1 {
+					return c.isStringLikeInOperandNoSchema(arr[len(arr)-1], pc, depth+1)
+				}
+				return true
+			default:
+				return false
+			}
+		}
+	}
+
+	return false
+}
+
 // handleIn converts in operator to SQL
 // leftOriginal is the original left argument (before SQL conversion) for enum validation.
 func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal interface{}) (string, error) {
@@ -482,10 +559,10 @@ func (c *ComparisonOperator) handleIn(leftSQL string, rightValue, leftOriginal i
 				}
 			}
 
-			// No schema or unknown type: use heuristic based on left side
-			// If left side is a literal (quoted), assume string containment
-			isLeftLiteral := strings.HasPrefix(leftSQL, "'") && strings.HasSuffix(leftSQL, "'")
-			if isLeftLiteral {
+			// No schema or unknown type: use heuristic based on left operand type.
+			// Known string-producing expressions (cat/substr) and string literals
+			// use containment; otherwise fall back to array membership.
+			if c.isStringLikeInOperandNoSchema(leftOriginal, nil, 0) || isSQLStringLiteral(leftSQL) {
 				// Use STRPOS/position for string containment
 				return fmt.Sprintf("%s > 0", c.strposFunc(rightSQL, leftSQL)), nil
 			}
@@ -966,25 +1043,10 @@ func (c *ComparisonOperator) handleInParam(leftOriginal, rightValue interface{},
 				}
 			}
 
-			// No schema: infer from the Go type of the original left value.
-			// Strings indicate string-containment; everything else is array membership.
-			// For ProcessedValue{IsSQL:true} from custom operators, mirror the
-			// non-param heuristic: treat SQL string literals ('...') as strings.
-			// When the value is a bare placeholder (e.g. @p1), look up the
-			// stored parameter type to recover the information lost during
-			// parameterization.
-			_, isLeftString := leftOriginal.(string)
-			if !isLeftString {
-				if pv, ok := leftOriginal.(ProcessedValue); ok {
-					if !pv.IsSQL {
-						isLeftString = true
-					} else if strings.HasPrefix(pv.Value, "'") && strings.HasSuffix(pv.Value, "'") {
-						isLeftString = true
-					} else if val, found := pc.ValueForPlaceholder(pv.Value); found {
-						_, isLeftString = val.(string)
-					}
-				}
-			}
+			// No schema: infer from left operand shape/type in a heuristic way.
+			// This improves string-containment detection for nested string
+			// expressions (cat/substr) while still falling back safely.
+			isLeftString := c.isStringLikeInOperandNoSchema(leftOriginal, pc, 0)
 
 			leftSQL, err := c.valueToSQLParam(leftOriginal, pc)
 			if err != nil {

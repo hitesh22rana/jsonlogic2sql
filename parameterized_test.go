@@ -790,6 +790,89 @@ func TestTranspileParameterized_InStringContainment(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_InStringExpressionContainment_NoSchema(t *testing.T) {
+	tests := []struct {
+		name       string
+		dialect    Dialect
+		jsonLogic  string
+		wantSQL    string
+		wantParams []QueryParam
+	}{
+		{
+			name:      "bigquery",
+			dialect:   DialectBigQuery,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, (@p1 + 1), @p2), @p3)) > 0",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:      "spanner",
+			dialect:   DialectSpanner,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, (@p1 + 1), @p2), @p3)) > 0",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:      "postgresql",
+			dialect:   DialectPostgreSQL,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE POSITION(CONCAT(SUBSTR(profile.first, ($1 + 1), $2), $3) IN profile.name) > 0",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:      "duckdb",
+			dialect:   DialectDuckDB,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, ($1 + 1), $2), $3)) > 0",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:      "clickhouse",
+			dialect:   DialectClickHouse,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE position(profile.name, CONCAT(substring(profile.first, (@p1 + 1), @p2), @p3)) > 0",
+			wantParams: []QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp, err := NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			gotSQL, gotParams, err := tp.TranspileParameterized(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Errorf("SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+			assertParams(t, gotParams, tt.wantParams)
+		})
+	}
+}
+
 func TestTranspileParameterized_InSchemaCoercion(t *testing.T) {
 	schema := NewSchema([]FieldSchema{
 		{Name: "name", Type: FieldTypeString},
