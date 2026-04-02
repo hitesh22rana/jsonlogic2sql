@@ -1,0 +1,587 @@
+package jsonlogic2sql
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func matrixSchema() *Schema {
+	return NewSchema([]FieldSchema{
+		{Name: "bag.records", Type: FieldTypeArray},
+		{Name: "bag.numbers", Type: FieldTypeArray},
+		{Name: "bag.words", Type: FieldTypeArray},
+		{Name: "bag.flags", Type: FieldTypeArray},
+		{Name: "metrics.amount", Type: FieldTypeNumber},
+		{Name: "profile.name", Type: FieldTypeString},
+	})
+}
+
+type apiOutput struct {
+	inlineSQL  string
+	condSQL    string
+	paramSQL   string
+	paramCond  string
+	params     []QueryParam
+	condParams []QueryParam
+}
+
+func decodeLogicMap(t *testing.T, logic string) map[string]interface{} {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(logic), &m); err != nil {
+		t.Fatalf("json.Unmarshal(map) failed: %v", err)
+	}
+	return m
+}
+
+func decodeLogicAny(t *testing.T, logic string) interface{} {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal([]byte(logic), &v); err != nil {
+		t.Fatalf("json.Unmarshal(interface) failed: %v", err)
+	}
+	return v
+}
+
+func runAllAPIVariants(t *testing.T, tr *Transpiler, logic string) apiOutput {
+	t.Helper()
+
+	inlineSQL, err := tr.Transpile(logic)
+	if err != nil {
+		t.Fatalf("Transpile() error: %v", err)
+	}
+	condSQL, err := tr.TranspileCondition(logic)
+	if err != nil {
+		t.Fatalf("TranspileCondition() error: %v", err)
+	}
+	paramSQL, params, err := tr.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error: %v", err)
+	}
+	paramCond, condParams, err := tr.TranspileConditionParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileConditionParameterized() error: %v", err)
+	}
+
+	logicMap := decodeLogicMap(t, logic)
+	logicAny := decodeLogicAny(t, logic)
+
+	inlineFromMap, err := tr.TranspileFromMap(logicMap)
+	if err != nil {
+		t.Fatalf("TranspileFromMap() error: %v", err)
+	}
+	inlineFromAny, err := tr.TranspileFromInterface(logicAny)
+	if err != nil {
+		t.Fatalf("TranspileFromInterface() error: %v", err)
+	}
+	condFromMap, err := tr.TranspileConditionFromMap(logicMap)
+	if err != nil {
+		t.Fatalf("TranspileConditionFromMap() error: %v", err)
+	}
+	condFromAny, err := tr.TranspileConditionFromInterface(logicAny)
+	if err != nil {
+		t.Fatalf("TranspileConditionFromInterface() error: %v", err)
+	}
+	paramFromMap, mapParams, err := tr.TranspileParameterizedFromMap(logicMap)
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromMap() error: %v", err)
+	}
+	paramFromAny, anyParams, err := tr.TranspileParameterizedFromInterface(logicAny)
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromInterface() error: %v", err)
+	}
+	paramCondFromMap, mapCondParams, err := tr.TranspileConditionParameterizedFromMap(logicMap)
+	if err != nil {
+		t.Fatalf("TranspileConditionParameterizedFromMap() error: %v", err)
+	}
+	paramCondFromAny, anyCondParams, err := tr.TranspileConditionParameterizedFromInterface(logicAny)
+	if err != nil {
+		t.Fatalf("TranspileConditionParameterizedFromInterface() error: %v", err)
+	}
+
+	if inlineFromMap != inlineSQL || inlineFromAny != inlineSQL {
+		t.Fatalf("inline API mismatch: direct=%q fromMap=%q fromAny=%q", inlineSQL, inlineFromMap, inlineFromAny)
+	}
+	if condFromMap != condSQL || condFromAny != condSQL {
+		t.Fatalf("condition API mismatch: direct=%q fromMap=%q fromAny=%q", condSQL, condFromMap, condFromAny)
+	}
+	if paramFromMap != paramSQL || paramFromAny != paramSQL {
+		t.Fatalf("parameterized API SQL mismatch: direct=%q fromMap=%q fromAny=%q", paramSQL, paramFromMap, paramFromAny)
+	}
+	if paramCondFromMap != paramCond || paramCondFromAny != paramCond {
+		t.Fatalf("parameterized condition SQL mismatch: direct=%q fromMap=%q fromAny=%q", paramCond, paramCondFromMap, paramCondFromAny)
+	}
+	if len(mapParams) != len(params) || len(anyParams) != len(params) {
+		t.Fatalf("parameterized API param count mismatch: direct=%d fromMap=%d fromAny=%d", len(params), len(mapParams), len(anyParams))
+	}
+	if len(mapCondParams) != len(condParams) || len(anyCondParams) != len(condParams) {
+		t.Fatalf("parameterized condition API param count mismatch: direct=%d fromMap=%d fromAny=%d", len(condParams), len(mapCondParams), len(anyCondParams))
+	}
+	if condSQL != strings.TrimPrefix(inlineSQL, "WHERE ") {
+		t.Fatalf("condition mismatch: inline=%q cond=%q", inlineSQL, condSQL)
+	}
+	if paramCond != strings.TrimPrefix(paramSQL, "WHERE ") {
+		t.Fatalf("parameterized condition mismatch: inline=%q cond=%q", paramSQL, paramCond)
+	}
+
+	return apiOutput{
+		inlineSQL:  inlineSQL,
+		condSQL:    condSQL,
+		paramSQL:   paramSQL,
+		paramCond:  paramCond,
+		params:     params,
+		condParams: condParams,
+	}
+}
+
+func assertPlaceholderStyle(t *testing.T, d Dialect, sql string, paramCount int) {
+	t.Helper()
+	if paramCount == 0 {
+		return
+	}
+	switch d {
+	case DialectPostgreSQL, DialectDuckDB:
+		if !strings.Contains(sql, "$1") {
+			t.Fatalf("expected $ placeholders for %s, got: %s", d, sql)
+		}
+	default:
+		if !strings.Contains(sql, "@p1") {
+			t.Fatalf("expected @p placeholders for %s, got: %s", d, sql)
+		}
+	}
+}
+
+func assertContains(t *testing.T, sql, fragment string) {
+	t.Helper()
+	if !strings.Contains(sql, fragment) {
+		t.Fatalf("expected SQL to contain %q, got: %s", fragment, sql)
+	}
+}
+
+func assertNotContains(t *testing.T, sql, fragment string) {
+	t.Helper()
+	if strings.Contains(sql, fragment) {
+		t.Fatalf("expected SQL not to contain %q, got: %s", fragment, sql)
+	}
+}
+
+func TestArrayEdgeMatrix_AllDialects_SchemaAndNoSchema(t *testing.T) {
+	type matrixCase struct {
+		name      string
+		logic     string
+		wantParam int
+		validate  func(t *testing.T, d Dialect, out apiOutput)
+	}
+
+	cases := []matrixCase{
+		{
+			name:      "small map",
+			logic:     `{"map":[{"var":"bag.numbers"},{"*":[{"var":"item"},2]}]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> (elem * 2), bag.numbers)")
+				} else {
+					assertContains(t, inline, "UNNEST(bag.numbers) AS elem")
+					assertContains(t, inline, "(elem * 2)")
+				}
+			},
+		},
+		{
+			name:      "all length function by dialect",
+			logic:     `{"all":[{"var":"bag.numbers"},{">=":[{"var":"item"},0]}]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				switch d {
+				case DialectBigQuery, DialectSpanner:
+					assertContains(t, inline, "ARRAY_LENGTH(bag.numbers)")
+				case DialectPostgreSQL:
+					assertContains(t, inline, "CARDINALITY(bag.numbers)")
+				case DialectDuckDB, DialectClickHouse:
+					assertContains(t, inline, "length(bag.numbers)")
+				}
+			},
+		},
+		{
+			name:      "merge dialect behavior",
+			logic:     `{"merge":[{"var":"bag.numbers"},{"var":"bag.words"}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				switch d {
+				case DialectPostgreSQL:
+					assertContains(t, inline, "bag.numbers || bag.words")
+				case DialectClickHouse:
+					assertContains(t, inline, "arrayConcat(bag.numbers, bag.words)")
+				default:
+					assertContains(t, inline, "ARRAY_CONCAT(bag.numbers, bag.words)")
+				}
+			},
+		},
+		{
+			name:      "reduce array-form current default",
+			logic:     `{"reduce":[{"var":"bag.numbers"},{"+":[{"var":"accumulator"},{"var":["current",0]}]},1]}`,
+			wantParam: 2,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "COALESCE(elem, 0)")
+			},
+		},
+		{
+			name:      "nested map with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"map":[{"var":"item.values"},{"+":[{"var":"item.base"},{"var":"current"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem1 -> (elem.base + elem1), elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "(elem.base + elem1)")
+					assertNotContains(t, inline, "UNNEST(elem.values) AS elem WHERE elem.base")
+				}
+			},
+		},
+		{
+			name:      "nested filter with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"filter":[{"var":"item.values"},{">=":[{"var":"current"},{"var":"item.base"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayFilter(elem1 -> elem1 >= elem.base, elem.values)")
+					assertNotContains(t, inline, "arrayFilter(elem -> elem >= elem.base, elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem1 >= elem.base")
+					assertNotContains(t, inline, "UNNEST(elem.values) AS elem WHERE elem >= elem.base")
+				}
+			},
+		},
+		{
+			name:      "nested all with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"all":[{"var":"item.values"},{">=":[{"var":"current"},{"var":"item.base"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayAll(elem1 -> elem1 >= elem.base, elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem1 >= elem.base")
+				}
+			},
+		},
+		{
+			name:      "nested some with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"some":[{"var":"item.values"},{">=":[{"var":"current"},{"var":"item.base"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayExists(elem1 -> elem1 >= elem.base, elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem1 >= elem.base")
+				}
+			},
+		},
+		{
+			name:      "nested none with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"none":[{"var":"item.values"},{"<":[{"var":"current"},{"var":"item.base"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayExists(elem1 -> elem1 < elem.base, elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem1 < elem.base")
+				}
+			},
+		},
+		{
+			name:      "nested reduce with outer field reference",
+			logic:     `{"map":[{"var":"bag.records"},{"reduce":[{"var":"item.values"},{"+":[{"var":"accumulator"},{"var":"current"}]},{"var":"item.base"}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> elem.base + coalesce(arrayReduce('sum', elem.values), 0), bag.records)")
+				} else {
+					assertContains(t, inline, "UNNEST(bag.records) AS elem")
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem.base + COALESCE((SELECT SUM(elem1)")
+				}
+			},
+		},
+		{
+			name:      "very deep mixed nesting",
+			logic:     `{"and":[{"some":[{"map":[{"var":"bag.records"},{"filter":[{"var":"item.values"},{">=":[{"var":"current"},{"var":"item.base"}]}]}]},{"all":[{"var":"item"},{">=":[{"var":"current"},0]}]}]},{">=":[{"var":"metrics.amount"},100]}]}`,
+			wantParam: 2,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "metrics.amount >= 100")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayFilter(elem1 -> elem1 >= elem.base, elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "elem1 >= elem.base")
+				}
+			},
+		},
+	}
+
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-aware", schema: matrixSchema()},
+		{name: "schema-less", schema: nil},
+	}
+
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range dialects {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect: d,
+						Schema:  mode.schema,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error: %v", err)
+					}
+
+					for _, c := range cases {
+						t.Run(c.name, func(t *testing.T) {
+							out := runAllAPIVariants(t, tr, c.logic)
+							if len(out.params) != c.wantParam {
+								t.Fatalf("param count mismatch: got=%d want=%d sql=%s", len(out.params), c.wantParam, out.paramSQL)
+							}
+							if len(out.condParams) != c.wantParam {
+								t.Fatalf("condition param count mismatch: got=%d want=%d sql=%s", len(out.condParams), c.wantParam, out.paramCond)
+							}
+							assertPlaceholderStyle(t, d, out.paramSQL, c.wantParam)
+							if c.validate != nil {
+								c.validate(t, d, out)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestArrayEdgeMatrix_SchemaVsNoSchemaValidation(t *testing.T) {
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	schemaTrByDialect := make(map[Dialect]*Transpiler, len(dialects))
+	noSchemaTrByDialect := make(map[Dialect]*Transpiler, len(dialects))
+
+	for _, d := range dialects {
+		withSchema, err := NewTranspilerWithConfig(&TranspilerConfig{
+			Dialect: d,
+			Schema:  matrixSchema(),
+		})
+		if err != nil {
+			t.Fatalf("with schema transpiler init failed: %v", err)
+		}
+		noSchema, err := NewTranspilerWithConfig(&TranspilerConfig{
+			Dialect: d,
+			Schema:  nil,
+		})
+		if err != nil {
+			t.Fatalf("no schema transpiler init failed: %v", err)
+		}
+		schemaTrByDialect[d] = withSchema
+		noSchemaTrByDialect[d] = noSchema
+	}
+
+	tests := []struct {
+		name          string
+		logic         string
+		wantSchemaErr string
+	}{
+		{
+			name:          "unknown field rejected with schema",
+			logic:         `{"map":[{"var":"unknown.arr"},{"+":[{"var":"item"},1]}]}`,
+			wantSchemaErr: "is not defined in schema",
+		},
+		{
+			name:          "non-array field rejected with schema",
+			logic:         `{"map":[{"var":"metrics.amount"},{"+":[{"var":"item"},1]}]}`,
+			wantSchemaErr: "array operation on non-array field",
+		},
+	}
+
+	for _, d := range dialects {
+		t.Run(d.String(), func(t *testing.T) {
+			for _, tc := range tests {
+				t.Run(tc.name, func(t *testing.T) {
+					_, err := schemaTrByDialect[d].Transpile(tc.logic)
+					if err == nil || !strings.Contains(err.Error(), tc.wantSchemaErr) {
+						t.Fatalf("expected schema error containing %q, got: %v", tc.wantSchemaErr, err)
+					}
+
+					// No-schema mode should accept and produce SQL shape.
+					sql, err := noSchemaTrByDialect[d].Transpile(tc.logic)
+					if err != nil {
+						t.Fatalf("no-schema mode should pass, got error: %v", err)
+					}
+					if !strings.HasPrefix(sql, "WHERE ") {
+						t.Fatalf("expected WHERE SQL in no-schema mode, got: %s", sql)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestArrayEdgeMatrix_PackageFunctionsSmoke(t *testing.T) {
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+	logic := `{"map":[{"var":"bag.numbers"},{"*":[{"var":"item"},2]}]}`
+	logicMap := decodeLogicMap(t, logic)
+	logicAny := decodeLogicAny(t, logic)
+
+	for _, d := range dialects {
+		t.Run(d.String(), func(t *testing.T) {
+			sql1, err := Transpile(d, logic)
+			if err != nil {
+				t.Fatalf("Transpile() error: %v", err)
+			}
+			sql2, err := TranspileFromMap(d, logicMap)
+			if err != nil {
+				t.Fatalf("TranspileFromMap() error: %v", err)
+			}
+			sql3, err := TranspileFromInterface(d, logicAny)
+			if err != nil {
+				t.Fatalf("TranspileFromInterface() error: %v", err)
+			}
+			cond, err := TranspileCondition(d, logic)
+			if err != nil {
+				t.Fatalf("TranspileCondition() error: %v", err)
+			}
+			if sql1 != sql2 || sql1 != sql3 {
+				t.Fatalf("package transpile mismatch: direct=%q map=%q any=%q", sql1, sql2, sql3)
+			}
+			if strings.TrimPrefix(sql1, "WHERE ") != cond {
+				t.Fatalf("package condition mismatch: sql=%q cond=%q", sql1, cond)
+			}
+
+			psql, params, err := TranspileParameterized(d, logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error: %v", err)
+			}
+			if len(params) != 1 {
+				t.Fatalf("expected 1 param, got %d", len(params))
+			}
+			pcond, cparams, err := TranspileConditionParameterized(d, logic)
+			if err != nil {
+				t.Fatalf("TranspileConditionParameterized() error: %v", err)
+			}
+			if strings.TrimPrefix(psql, "WHERE ") != pcond {
+				t.Fatalf("package parameterized condition mismatch: sql=%q cond=%q", psql, pcond)
+			}
+			if len(cparams) != len(params) {
+				t.Fatalf("package parameterized param len mismatch: cond=%d sql=%d", len(cparams), len(params))
+			}
+			assertPlaceholderStyle(t, d, psql, 1)
+		})
+	}
+}
+
+func BenchmarkArrayEdgeMatrix_DeepNesting(b *testing.B) {
+	logic := `{"and":[{"some":[{"map":[{"var":"bag.records"},{"filter":[{"var":"item.values"},{">=":[{"var":"current"},{"var":"item.base"}]}]}]},{"all":[{"var":"item"},{">=":[{"var":"current"},0]}]}]},{">=":[{"var":"metrics.amount"},100]}]}`
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect: DialectBigQuery,
+		Schema:  matrixSchema(),
+	})
+	if err != nil {
+		b.Fatalf("failed to init transpiler: %v", err)
+	}
+	for i := 0; i < b.N; i++ {
+		if _, err := tr.Transpile(logic); err != nil {
+			b.Fatalf("Transpile() error: %v", err)
+		}
+	}
+}
+
+func TestArrayEdgeMatrix_ErrorMessagesAreStable(t *testing.T) {
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect: DialectBigQuery,
+		Schema:  matrixSchema(),
+	})
+	if err != nil {
+		t.Fatalf("failed to init transpiler: %v", err)
+	}
+	_, err = tr.Transpile(`{"reduce":[{"var":"bag.numbers"},{"var":"current"}]}`)
+	if err == nil {
+		t.Fatal("expected reduce arity error")
+	}
+	if !strings.Contains(err.Error(), "reduce operator requires at least 3 arguments") {
+		t.Fatalf("unexpected reduce arity error: %v", err)
+	}
+}
+
+func TestArrayEdgeMatrix_NoPanicOnComplexInputs(t *testing.T) {
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect: DialectBigQuery,
+		Schema:  matrixSchema(),
+	})
+	if err != nil {
+		t.Fatalf("failed to init transpiler: %v", err)
+	}
+
+	inputs := []string{
+		`{"map":[{"var":"bag.records"},{"map":[{"var":"item.values"},{"if":[{">":[{"var":"current"},10]},{"var":"item.base"},{"var":"current"}]}]}]}`,
+		`{"filter":[{"map":[{"var":"bag.records"},{"reduce":[{"var":"item.values"},{"+":[{"var":"accumulator"},{"var":"current"}]},{"var":"item.base"}]}]},{">":[{"var":"item"},0]}]}`,
+		`{"all":[{"filter":[{"var":"bag.numbers"},{">":[{"var":"item"},0]}]},{">":[{"var":"item"},0]}]}`,
+	}
+
+	for i, logic := range inputs {
+		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+			if _, err := tr.Transpile(logic); err != nil {
+				t.Fatalf("Transpile() failed for complex input: %v", err)
+			}
+			if _, _, err := tr.TranspileParameterized(logic); err != nil {
+				t.Fatalf("TranspileParameterized() failed for complex input: %v", err)
+			}
+		})
+	}
+}

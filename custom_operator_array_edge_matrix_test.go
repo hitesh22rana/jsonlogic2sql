@@ -1,0 +1,415 @@
+package jsonlogic2sql
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func registerArrayEdgeCustomOperators(t *testing.T, tr *Transpiler) {
+	t.Helper()
+
+	registrations := []struct {
+		name string
+		fn   OperatorFunc
+	}{
+		{
+			name: "double",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 1 {
+					return "", fmt.Errorf("double requires 1 argument")
+				}
+				return fmt.Sprintf("(%v * 2)", args[0]), nil
+			},
+		},
+		{
+			name: "plus",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 2 {
+					return "", fmt.Errorf("plus requires 2 arguments")
+				}
+				return fmt.Sprintf("(%v + %v)", args[0], args[1]), nil
+			},
+		},
+		{
+			name: "gte",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 2 {
+					return "", fmt.Errorf("gte requires 2 arguments")
+				}
+				return fmt.Sprintf("(%v >= %v)", args[0], args[1]), nil
+			},
+		},
+		{
+			name: "isPositive",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 1 {
+					return "", fmt.Errorf("isPositive requires 1 argument")
+				}
+				return fmt.Sprintf("(%v > 0)", args[0]), nil
+			},
+		},
+		{
+			name: "emit_item",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 0 {
+					return "", fmt.Errorf("emit_item requires 0 arguments")
+				}
+				// Intentional raw placeholder SQL to exercise post-SQL safety-net rewrite.
+				return "item", nil
+			},
+		},
+		{
+			name: "emit_current",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 0 {
+					return "", fmt.Errorf("emit_current requires 0 arguments")
+				}
+				// Intentional raw placeholder SQL to exercise post-SQL safety-net rewrite.
+				return "current", nil
+			},
+		},
+		{
+			name: "emit_current_balance",
+			fn: func(_ string, args []interface{}) (string, error) {
+				if len(args) != 0 {
+					return "", fmt.Errorf("emit_current_balance requires 0 arguments")
+				}
+				// Must remain untouched; contains current as substring, not as element placeholder.
+				return "current_balance", nil
+			},
+		},
+	}
+
+	for _, reg := range registrations {
+		if err := tr.RegisterOperatorFunc(reg.name, reg.fn); err != nil {
+			t.Fatalf("RegisterOperatorFunc(%q) failed: %v", reg.name, err)
+		}
+	}
+}
+
+func assertNoWholeWordToken(t *testing.T, sql, token string) {
+	t.Helper()
+	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(token) + `\b`)
+	if pattern.MatchString(sql) {
+		t.Fatalf("expected SQL not to contain whole-word token %q, got: %s", token, sql)
+	}
+}
+
+func TestCustomOperatorArrayEdgeMatrix_AllDialects_SchemaAndNoSchema(t *testing.T) {
+	type matrixCase struct {
+		name      string
+		logic     string
+		wantParam int
+		validate  func(t *testing.T, d Dialect, out apiOutput)
+	}
+
+	cases := []matrixCase{
+		{
+			name:      "map with custom operator and direct item var",
+			logic:     `{"map":[{"var":"bag.numbers"},{"double":[{"var":"item"}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> (elem * 2), bag.numbers)")
+				} else {
+					assertContains(t, inline, "UNNEST(bag.numbers) AS elem")
+					assertContains(t, inline, "(elem * 2)")
+				}
+			},
+		},
+		{
+			name:      "map with custom operator and emit_item placeholder",
+			logic:     `{"map":[{"var":"bag.numbers"},{"double":[{"emit_item":[]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> (elem * 2), bag.numbers)")
+				} else {
+					assertContains(t, inline, "UNNEST(bag.numbers) AS elem")
+					assertContains(t, inline, "(elem * 2)")
+				}
+			},
+		},
+		{
+			name:      "map raw item placeholder rewritten",
+			logic:     `{"map":[{"var":"bag.numbers"},{"emit_item":[]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> elem, bag.numbers)")
+					assertNoWholeWordToken(t, inline, "item")
+				} else {
+					assertContains(t, inline, "SELECT elem FROM UNNEST(bag.numbers) AS elem")
+					assertNoWholeWordToken(t, inline, "item")
+				}
+			},
+		},
+		{
+			name:      "all with custom predicate and direct item var",
+			logic:     `{"all":[{"var":"bag.numbers"},{"isPositive":[{"var":"item"}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "(elem > 0)")
+				switch d {
+				case DialectBigQuery, DialectSpanner:
+					assertContains(t, inline, "ARRAY_LENGTH(bag.numbers)")
+				case DialectPostgreSQL:
+					assertContains(t, inline, "CARDINALITY(bag.numbers)")
+				case DialectDuckDB, DialectClickHouse:
+					assertContains(t, inline, "length(bag.numbers)")
+				}
+			},
+		},
+		{
+			name:      "all with custom predicate",
+			logic:     `{"all":[{"var":"bag.numbers"},{"isPositive":[{"emit_item":[]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "(elem > 0)")
+				switch d {
+				case DialectBigQuery, DialectSpanner:
+					assertContains(t, inline, "ARRAY_LENGTH(bag.numbers)")
+				case DialectPostgreSQL:
+					assertContains(t, inline, "CARDINALITY(bag.numbers)")
+				case DialectDuckDB, DialectClickHouse:
+					assertContains(t, inline, "length(bag.numbers)")
+				}
+			},
+		},
+		{
+			name:      "nested filter mixed scope with direct vars",
+			logic:     `{"map":[{"var":"bag.records"},{"filter":[{"var":"item.values"},{"gte":[{"var":"current"},{"var":"item.base"}]}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayFilter(elem1 -> (elem1 >= elem.base), elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "(elem1 >= elem.base)")
+				}
+				assertNoWholeWordToken(t, inline, "current")
+			},
+		},
+		{
+			name:      "nested filter with custom operator",
+			logic:     `{"map":[{"var":"bag.records"},{"filter":[{"var":"item.values"},{"gte":[{"emit_current":[]},0]}]}]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayFilter(elem -> (elem >= 0), elem.values)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem")
+					assertContains(t, inline, "(elem >= 0)")
+				}
+				assertNoWholeWordToken(t, inline, "current")
+			},
+		},
+		{
+			name:      "nested reduce with direct accumulator/current vars",
+			logic:     `{"map":[{"var":"bag.records"},{"reduce":[{"var":"item.values"},{"plus":[{"var":"accumulator"},{"var":"current"}]},{"var":"item.base"}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "elem.base")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> arrayFold((acc, elem1) -> (elem.base + elem1), elem.values, elem.base), bag.records)")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "(elem.base + elem1)")
+				}
+				assertNoWholeWordToken(t, inline, "current")
+				assertNoWholeWordToken(t, inline, "accumulator")
+			},
+		},
+		{
+			name:      "nested reduce mixed scope with custom operators",
+			logic:     `{"map":[{"var":"bag.records"},{"reduce":[{"var":"item.values"},{"+":[{"var":"accumulator"},{"double":[{"emit_current":[]}]}]},{"var":"item.base"}]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "elem.base")
+				if d != DialectClickHouse {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+				}
+				assertNoWholeWordToken(t, inline, "current")
+				assertNoWholeWordToken(t, inline, "accumulator")
+			},
+		},
+		{
+			name:      "reduce direct accumulator/current vars",
+			logic:     `{"reduce":[{"var":"bag.numbers"},{"plus":[{"var":"accumulator"},{"var":"current"}]},0]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, _ Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "elem")
+				assertNoWholeWordToken(t, inline, "current")
+				assertNoWholeWordToken(t, inline, "accumulator")
+			},
+		},
+		{
+			name:      "reduce raw current placeholder rewritten",
+			logic:     `{"reduce":[{"var":"bag.numbers"},{"+":[{"var":"accumulator"},{"emit_current":[]}]},0]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, _ Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "elem")
+				assertNoWholeWordToken(t, inline, "current")
+				assertNoWholeWordToken(t, inline, "accumulator")
+			},
+		},
+		{
+			name:      "word-boundary safety for current substring",
+			logic:     `{"map":[{"var":"bag.numbers"},{"emit_current_balance":[]}]}`,
+			wantParam: 0,
+			validate: func(t *testing.T, _ Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "current_balance")
+				assertNotContains(t, inline, "elem_balance")
+			},
+		},
+		{
+			name:      "parameterized custom operator receives placeholder",
+			logic:     `{"filter":[{"var":"bag.numbers"},{"gte":[{"emit_item":[]},10]}]}`,
+			wantParam: 1,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "(elem >= 10)")
+				assertPlaceholderStyle(t, d, out.paramSQL, 1)
+			},
+		},
+		{
+			name:      "deep nested custom reducer with schema aliases",
+			logic:     `{"and":[{"some":[{"map":[{"var":"bag.records"},{"reduce":[{"var":"item.values"},{"plus":[{"var":"accumulator"},{"var":"current"}]},{"var":"item.base"}]}]},{">=":[{"var":"item"},0]}]},{">=":[{"var":"metrics.amount"},100]}]}`,
+			wantParam: 2,
+			validate: func(t *testing.T, d Dialect, out apiOutput) {
+				t.Helper()
+				inline := strings.TrimPrefix(out.inlineSQL, "WHERE ")
+				assertContains(t, inline, "metrics.amount >= 100")
+				assertNoWholeWordToken(t, inline, "current")
+				assertNoWholeWordToken(t, inline, "accumulator")
+				if d == DialectClickHouse {
+					assertContains(t, inline, "arrayMap(elem -> arrayFold((acc, elem1) -> (elem.base + elem1), elem.values, elem.base), bag.records)")
+					assertContains(t, inline, "arrayExists(elem -> elem >= 0")
+				} else {
+					assertContains(t, inline, "UNNEST(elem.values) AS elem1")
+					assertContains(t, inline, "(elem.base + elem1)")
+				}
+			},
+		},
+	}
+
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-aware", schema: matrixSchema()},
+		{name: "schema-less", schema: nil},
+	}
+
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range dialects {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect: d,
+						Schema:  mode.schema,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error: %v", err)
+					}
+					registerArrayEdgeCustomOperators(t, tr)
+
+					for _, c := range cases {
+						t.Run(c.name, func(t *testing.T) {
+							out := runAllAPIVariants(t, tr, c.logic)
+							if len(out.params) != c.wantParam {
+								t.Fatalf("param count mismatch: got=%d want=%d sql=%s", len(out.params), c.wantParam, out.paramSQL)
+							}
+							if len(out.condParams) != c.wantParam {
+								t.Fatalf("condition param count mismatch: got=%d want=%d sql=%s", len(out.condParams), c.wantParam, out.paramCond)
+							}
+							if c.validate != nil {
+								c.validate(t, d, out)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCustomOperatorArrayEdgeMatrix_SchemaValidationParity(t *testing.T) {
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+	logic := `{"map":[{"var":"unknown.values"},{"double":[{"var":"item"}]}]}`
+
+	for _, d := range dialects {
+		t.Run(d.String(), func(t *testing.T) {
+			withSchema, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect: d,
+				Schema:  matrixSchema(),
+			})
+			if err != nil {
+				t.Fatalf("with-schema transpiler init failed: %v", err)
+			}
+			noSchema, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect: d,
+				Schema:  nil,
+			})
+			if err != nil {
+				t.Fatalf("no-schema transpiler init failed: %v", err)
+			}
+			registerArrayEdgeCustomOperators(t, withSchema)
+			registerArrayEdgeCustomOperators(t, noSchema)
+
+			_, err = withSchema.Transpile(logic)
+			if err == nil || !strings.Contains(err.Error(), "is not defined in schema") {
+				t.Fatalf("expected schema validation error, got: %v", err)
+			}
+
+			sql, err := noSchema.Transpile(logic)
+			if err != nil {
+				t.Fatalf("no-schema transpile should pass, got: %v", err)
+			}
+			if !strings.HasPrefix(sql, "WHERE ") {
+				t.Fatalf("expected WHERE SQL in no-schema mode, got: %s", sql)
+			}
+		})
+	}
+}
