@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
 	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
@@ -37,6 +38,7 @@ type ArrayOperator struct {
 	numericOp    *NumericOperator
 	scopeDepth   int
 	visibleElems []string
+	exprPath     string
 }
 
 // NewArrayOperator creates a new ArrayOperator instance with optional config.
@@ -49,6 +51,7 @@ func NewArrayOperator(config *OperatorConfig) *ArrayOperator {
 		numericOp:    NewNumericOperator(config),
 		scopeDepth:   0,
 		visibleElems: []string{ElemVar},
+		exprPath:     "$",
 	}
 }
 
@@ -60,11 +63,47 @@ func (a *ArrayOperator) elemAlias() string {
 }
 
 func (a *ArrayOperator) withChildScope() *ArrayOperator {
-	child := NewArrayOperator(a.config)
-	child.scopeDepth = a.scopeDepth + 1
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth + 1,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     a.exprPath,
+	}
 	childAlias := child.elemAlias()
-	child.visibleElems = append(append([]string{}, a.visibleElems...), childAlias)
+	child.visibleElems = append(child.visibleElems, childAlias)
 	return child
+}
+
+func (a *ArrayOperator) withPath(path string) *ArrayOperator {
+	if path == "" {
+		path = "$"
+	}
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     path,
+	}
+	return child
+}
+
+func (a *ArrayOperator) currentPath() string {
+	if a == nil || a.exprPath == "" {
+		return "$"
+	}
+	return a.exprPath
+}
+
+func (a *ArrayOperator) argPath(index int) string {
+	return tperrors.BuildArrayPath(a.currentPath(), index)
 }
 
 func (a *ArrayOperator) isVisibleElemPath(name string) bool {
@@ -225,8 +264,9 @@ func (a *ArrayOperator) rewriteOuterDottedForNested(op string, args []interface{
 	return newArgs
 }
 
-// rewriteOuterDottedElementRefs rewrites dotted item/current references to an explicit
-// outer alias (e.g. item.base -> elem.base), while leaving plain item/current untouched.
+// rewriteOuterDottedElementRefs rewrites dotted item references to an explicit
+// outer alias (e.g. item.base -> elem.base), while leaving current/current.*
+// untouched so inner-scope current semantics remain intact.
 // Nested array lambdas are not rewritten (only their source/initial outer-scope args).
 func (a *ArrayOperator) rewriteOuterDottedElementRefs(expr interface{}, outerAlias string) interface{} {
 	switch e := expr.(type) {
@@ -237,8 +277,6 @@ func (a *ArrayOperator) rewriteOuterDottedElementRefs(expr interface{}, outerAli
 					switch {
 					case strings.HasPrefix(varStr, ItemVar+"."):
 						return map[string]interface{}{OpVar: outerAlias + varStr[len(ItemVar):]}
-					case strings.HasPrefix(varStr, CurrentVar+"."):
-						return map[string]interface{}{OpVar: outerAlias + varStr[len(CurrentVar):]}
 					default:
 						return e
 					}
@@ -250,11 +288,6 @@ func (a *ArrayOperator) rewriteOuterDottedElementRefs(expr interface{}, outerAli
 							newArr := make([]interface{}, len(varArr))
 							copy(newArr, varArr)
 							newArr[0] = outerAlias + varStr[len(ItemVar):]
-							return map[string]interface{}{OpVar: newArr}
-						case strings.HasPrefix(varStr, CurrentVar+"."):
-							newArr := make([]interface{}, len(varArr))
-							copy(newArr, varArr)
-							newArr[0] = outerAlias + varStr[len(CurrentVar):]
 							return map[string]interface{}{OpVar: newArr}
 						default:
 							return e
@@ -399,6 +432,12 @@ func (a *ArrayOperator) ToSQL(operator string, args []interface{}) (string, erro
 	}
 }
 
+// ToSQLAtPath converts an array operation to SQL using the provided JSONPath
+// as the operator context for nested expression error reporting.
+func (a *ArrayOperator) ToSQLAtPath(operator string, args []interface{}, path string) (string, error) {
+	return a.withPath(path).ToSQL(operator, args)
+}
+
 // handleMap converts map operator to SQL.
 // Generates: ARRAY(SELECT transformation FROM UNNEST(array) AS elem).
 // For ClickHouse: Uses arrayMap or subquery with arrayJoin.
@@ -420,14 +459,14 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 
 	// Second argument: transformation expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	transformation, err := a.expressionToSQL(rewritten)
+	transformation, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
@@ -466,14 +505,14 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
@@ -517,7 +556,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce array argument: %w", err)
 	}
@@ -526,7 +565,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	reducerExpr := args[1]
 
 	// Third argument: initial value
-	initial, err := a.valueToSQL(args[2])
+	initial, err := a.valueToSQLAtPath(args[2], a.argPath(2))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce initial argument: %w", err)
 	}
@@ -569,7 +608,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	// accumulator substitution must happen LAST so that the safety net
 	// doesn't corrupt initial values containing "current"/"item" field names.
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQLWithContext(rewritten, true)
+	reducerWithElem, err := a.expressionToSQLWithContextAndPath(rewritten, true, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -698,14 +737,14 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
@@ -748,14 +787,14 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
@@ -796,14 +835,14 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
@@ -848,7 +887,7 @@ func (a *ArrayOperator) handleMerge(args []interface{}) (string, error) {
 	// Convert all array arguments to SQL
 	arrays := make([]string, len(args))
 	for i, arg := range args {
-		array, err := a.valueToSQL(arg)
+		array, err := a.valueToSQLAtPath(arg, a.argPath(i))
 		if err != nil {
 			return "", fmt.Errorf("invalid merge array argument %d: %w", i, err)
 		}
@@ -883,6 +922,10 @@ func (a *ArrayOperator) handleMerge(args []interface{}) (string, error) {
 
 // valueToSQL converts a value to SQL, handling var expressions, arrays, and literals.
 func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
+	return a.valueToSQLAtPath(value, a.currentPath())
+}
+
+func (a *ArrayOperator) valueToSQLAtPath(value interface{}, path string) (string, error) {
 	// Handle ProcessedValue (pre-processed SQL from parser)
 	if pv, ok := value.(ProcessedValue); ok {
 		if pv.IsSQL {
@@ -902,7 +945,7 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 			return a.dataOp.ToSQL(OpVar, []interface{}{varExpr})
 		}
 		// Otherwise, it's a complex expression - convert it using expressionToSQL
-		return a.expressionToSQL(value)
+		return a.expressionToSQLWithContextAndPath(value, false, path)
 	}
 
 	// Handle arrays
@@ -923,19 +966,14 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 	return a.dataOp.valueToSQL(value)
 }
 
-// expressionToSQL converts a JSON Logic expression to SQL.
-func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
-	return a.expressionToSQLWithContext(expr, false)
-}
-
-func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumulator bool) (string, error) {
+func (a *ArrayOperator) expressionToSQLWithContextAndPath(expr interface{}, allowAccumulator bool, path string) (string, error) {
 	// Handle ProcessedValue (pre-processed SQL from parser)
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
 		// It's a literal, recursively convert it
-		return a.expressionToSQLWithContext(pv.Value, allowAccumulator)
+		return a.expressionToSQLWithContextAndPath(pv.Value, allowAccumulator, path)
 	}
 
 	// Handle primitive values
@@ -959,7 +997,8 @@ func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumu
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -972,7 +1011,8 @@ func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumu
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -985,7 +1025,8 @@ func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumu
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContext(arr, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -1005,17 +1046,21 @@ func (a *ArrayOperator) expressionToSQLWithContext(expr interface{}, allowAccumu
 						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
 						target = a.withChildScope()
 					}
-					return target.ToSQL(operator, nestedArgs)
+					nestedPath := tperrors.BuildPath(path, operator, -1)
+					return target.ToSQLAtPath(operator, nestedArgs, nestedPath)
 				}
 			default:
 				// Try to use the expression parser callback for unknown operators
 				// This enables support for custom operators in nested contexts
 				if a.config != nil && a.config.HasExpressionParser() {
-					rewrittenExpr, err := a.rewriteScopedVarsForOperatorWithContext(exprMap, allowAccumulator)
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorWithContextAndPath(exprMap, allowAccumulator, path)
 					if err != nil {
 						return "", err
 					}
-					return a.config.ParseExpression(rewrittenExpr, "$")
+					if pv, ok := rewrittenExpr.(ProcessedValue); ok && pv.IsSQL {
+						return pv.Value, nil
+					}
+					return a.config.ParseExpression(rewrittenExpr, path)
 				}
 				return "", fmt.Errorf("unsupported operator in array expression: %s", operator)
 			}
@@ -1166,7 +1211,7 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 	return "", false, nil
 }
 
-func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}, allowAccumulator bool) (interface{}, error) {
+func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContextAndPath(expr interface{}, allowAccumulator bool, path string) (interface{}, error) {
 	switch e := expr.(type) {
 	case map[string]interface{}:
 		if len(e) == 1 {
@@ -1190,15 +1235,16 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}
 					}
 					newArgs := make([]interface{}, len(arr))
 					copy(newArgs, arr)
+					opPath := tperrors.BuildPath(path, opName, -1)
 					if len(newArgs) > 0 {
-						rewritten, err := a.rewriteScopedVarsForOperatorWithContext(arr[0], allowAccumulator)
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr[0], allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
 						if err != nil {
 							return nil, err
 						}
 						newArgs[0] = rewritten
 					}
 					if opName == OpReduce && len(newArgs) > 2 {
-						rewritten, err := a.rewriteScopedVarsForOperatorWithContext(arr[2], allowAccumulator)
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr[2], allowAccumulator, tperrors.BuildArrayPath(opPath, 2))
 						if err != nil {
 							return nil, err
 						}
@@ -1206,11 +1252,23 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}
 					}
 					return map[string]interface{}{opName: newArgs}, nil
 				}
+				if !a.isBuiltInOperatorName(opName) && a.config != nil && a.config.HasExpressionParser() {
+					opPath := tperrors.BuildPath(path, opName, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(opArgs, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+					if err != nil {
+						return nil, err
+					}
+					sql, err := a.config.ParseExpression(map[string]interface{}{opName: rewrittenArgs}, path)
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
 			}
 		}
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorWithContext(v, allowAccumulator)
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(v, allowAccumulator, tperrors.BuildPath(path, k, -1))
 			if err != nil {
 				return nil, err
 			}
@@ -1221,7 +1279,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}
 	case []interface{}:
 		result := make([]interface{}, len(e))
 		for i, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorWithContext(v, allowAccumulator)
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(v, allowAccumulator, tperrors.BuildArrayPath(path, i))
 			if err != nil {
 				return nil, err
 			}
@@ -1239,6 +1297,19 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContext(expr interface{}
 func (a *ArrayOperator) isArrayOperator(op string) bool {
 	switch op {
 	case OpMap, OpFilter, OpReduce, OpAll, OpSome, OpNone:
+		return true
+	}
+	return false
+}
+
+func (a *ArrayOperator) isBuiltInOperatorName(op string) bool {
+	switch op {
+	case OpVar, OpMissing, OpMissingSome,
+		OpEqual, OpStrictEqual, OpNotEqual, OpStrictNotEqual, OpGreaterThan, OpGreaterThanOrEqual, OpLessThan, OpLessThanOrEqual, OpIn,
+		OpAnd, OpOr, OpNot, OpDoubleBang, OpIf,
+		OpAdd, OpSubtract, OpMultiply, OpDivide, OpModulo, OpMax, OpMin,
+		OpCat, OpSubstr,
+		OpMap, OpFilter, OpReduce, OpAll, OpSome, OpNone, OpMerge:
 		return true
 	}
 	return false
@@ -1368,6 +1439,11 @@ func (a *ArrayOperator) ToSQLParam(operator string, args []interface{}, pc *para
 	}
 }
 
+// ToSQLParamAtPath is the parameterized variant of ToSQLAtPath. Keep in sync.
+func (a *ArrayOperator) ToSQLParamAtPath(operator string, args []interface{}, pc *params.ParamCollector, path string) (string, error) {
+	return a.withPath(path).ToSQLParam(operator, args, pc)
+}
+
 // handleMapParam is the parameterized variant of handleMap. Keep in sync.
 func (a *ArrayOperator) handleMapParam(args []interface{}, pc *params.ParamCollector) (string, error) {
 	if len(args) != 2 {
@@ -1381,12 +1457,12 @@ func (a *ArrayOperator) handleMapParam(args []interface{}, pc *params.ParamColle
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	transformation, err := a.expressionToSQLParam(rewritten, pc)
+	transformation, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
@@ -1415,12 +1491,12 @@ func (a *ArrayOperator) handleFilterParam(args []interface{}, pc *params.ParamCo
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
@@ -1449,12 +1525,12 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce array argument: %w", err)
 	}
 	reducerExpr := args[1]
-	initial, err := a.valueToSQLParam(args[2], pc)
+	initial, err := a.valueToSQLParamAtPath(args[2], pc, a.argPath(2))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce initial argument: %w", err)
 	}
@@ -1483,7 +1559,7 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 	}
 
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQLParamWithContext(rewritten, pc, true)
+	reducerWithElem, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, true, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -1512,12 +1588,12 @@ func (a *ArrayOperator) handleAllParam(args []interface{}, pc *params.ParamColle
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
@@ -1547,12 +1623,12 @@ func (a *ArrayOperator) handleSomeParam(args []interface{}, pc *params.ParamColl
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
@@ -1581,12 +1657,12 @@ func (a *ArrayOperator) handleNoneParam(args []interface{}, pc *params.ParamColl
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
@@ -1619,7 +1695,7 @@ func (a *ArrayOperator) handleMergeParam(args []interface{}, pc *params.ParamCol
 	}
 	arrays := make([]string, len(args))
 	for i, arg := range args {
-		array, err := a.valueToSQLParam(arg, pc)
+		array, err := a.valueToSQLParamAtPath(arg, pc, a.argPath(i))
 		if err != nil {
 			return "", fmt.Errorf("invalid merge array argument %d: %w", i, err)
 		}
@@ -1649,6 +1725,10 @@ func (a *ArrayOperator) handleMergeParam(args []interface{}, pc *params.ParamCol
 
 // valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
 func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	return a.valueToSQLParamAtPath(value, pc, a.currentPath())
+}
+
+func (a *ArrayOperator) valueToSQLParamAtPath(value interface{}, pc *params.ParamCollector, path string) (string, error) {
 	if pv, ok := value.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
@@ -1663,7 +1743,7 @@ func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamColle
 			}
 			return a.dataOp.ToSQLParam(OpVar, []interface{}{varExpr}, pc)
 		}
-		return a.expressionToSQLParam(value, pc)
+		return a.expressionToSQLParamWithContextAndPath(value, pc, false, path)
 	}
 
 	if arr, ok := value.([]interface{}); ok {
@@ -1681,21 +1761,17 @@ func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamColle
 	return a.dataOp.valueToSQLParam(value, pc)
 }
 
-// expressionToSQLParam is the parameterized variant of expressionToSQL. Keep in sync.
-func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamCollector) (string, error) {
-	return a.expressionToSQLParamWithContext(expr, pc, false)
-}
-
-func (a *ArrayOperator) expressionToSQLParamWithContext(
+func (a *ArrayOperator) expressionToSQLParamWithContextAndPath(
 	expr interface{},
 	pc *params.ParamCollector,
 	allowAccumulator bool,
+	path string,
 ) (string, error) {
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
-		return a.expressionToSQLParamWithContext(pv.Value, pc, allowAccumulator)
+		return a.expressionToSQLParamWithContextAndPath(pv.Value, pc, allowAccumulator, path)
 	}
 
 	if a.isPrimitive(expr) {
@@ -1716,7 +1792,8 @@ func (a *ArrayOperator) expressionToSQLParamWithContext(
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -1729,7 +1806,8 @@ func (a *ArrayOperator) expressionToSQLParamWithContext(
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -1742,7 +1820,8 @@ func (a *ArrayOperator) expressionToSQLParamWithContext(
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
-					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContext(arr, pc, allowAccumulator)
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
 					if err != nil {
 						return "", err
 					}
@@ -1761,15 +1840,19 @@ func (a *ArrayOperator) expressionToSQLParamWithContext(
 						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
 						target = a.withChildScope()
 					}
-					return target.ToSQLParam(operator, nestedArgs, pc)
+					nestedPath := tperrors.BuildPath(path, operator, -1)
+					return target.ToSQLParamAtPath(operator, nestedArgs, pc, nestedPath)
 				}
 			default:
 				if a.config != nil && a.config.HasParamExpressionParser() {
-					rewrittenExpr, err := a.rewriteScopedVarsForOperatorParamWithContext(exprMap, pc, allowAccumulator)
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(exprMap, pc, allowAccumulator, path)
 					if err != nil {
 						return "", err
 					}
-					return a.config.ParseExpressionParam(rewrittenExpr, "$", pc)
+					if pv, ok := rewrittenExpr.(ProcessedValue); ok && pv.IsSQL {
+						return pv.Value, nil
+					}
+					return a.config.ParseExpressionParam(rewrittenExpr, path, pc)
 				}
 				return "", fmt.Errorf("unsupported operator in array expression: %s", operator)
 			}
@@ -1856,10 +1939,11 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 	return "", false, nil
 }
 
-func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContext(
+func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContextAndPath(
 	expr interface{},
 	pc *params.ParamCollector,
 	allowAccumulator bool,
+	path string,
 ) (interface{}, error) {
 	switch e := expr.(type) {
 	case map[string]interface{}:
@@ -1884,15 +1968,16 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContext(
 					}
 					newArgs := make([]interface{}, len(arr))
 					copy(newArgs, arr)
+					opPath := tperrors.BuildPath(path, opName, -1)
 					if len(newArgs) > 0 {
-						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(arr[0], pc, allowAccumulator)
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr[0], pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
 						if err != nil {
 							return nil, err
 						}
 						newArgs[0] = rewritten
 					}
 					if opName == OpReduce && len(newArgs) > 2 {
-						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(arr[2], pc, allowAccumulator)
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr[2], pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 2))
 						if err != nil {
 							return nil, err
 						}
@@ -1900,11 +1985,23 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContext(
 					}
 					return map[string]interface{}{opName: newArgs}, nil
 				}
+				if !a.isBuiltInOperatorName(opName) && a.config != nil && a.config.HasParamExpressionParser() {
+					opPath := tperrors.BuildPath(path, opName, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(opArgs, pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+					if err != nil {
+						return nil, err
+					}
+					sql, err := a.config.ParseExpressionParam(map[string]interface{}{opName: rewrittenArgs}, path, pc)
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
 			}
 		}
 		result := make(map[string]interface{}, len(e))
 		for k, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(v, pc, allowAccumulator)
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(v, pc, allowAccumulator, tperrors.BuildPath(path, k, -1))
 			if err != nil {
 				return nil, err
 			}
@@ -1915,7 +2012,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContext(
 	case []interface{}:
 		result := make([]interface{}, len(e))
 		for i, v := range e {
-			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContext(v, pc, allowAccumulator)
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(v, pc, allowAccumulator, tperrors.BuildArrayPath(path, i))
 			if err != nil {
 				return nil, err
 			}

@@ -328,6 +328,8 @@ WHERE 0 + COALESCE((SELECT SUM(elem) FROM UNNEST(numbers) AS elem), 0)
 
 For nested array operators, the transpiler keeps inner and outer element scopes distinct (for example `elem`, `elem1`) when needed, so references like `item.base` in nested reducers resolve to the intended outer element.
 
+Inside an inner lambda, `current` and `current.*` always refer to that inner element alias (for example `elem1`, `elem1.base`). Outer-element access in nested lambdas should use `item.*`.
+
 ### All Elements Satisfy Condition
 
 ```json

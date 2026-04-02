@@ -264,7 +264,7 @@ func (p *Parser) parseOperator(operator string, args interface{}, path string) (
 	// Array operators
 	case operators.OpMap, operators.OpFilter, operators.OpReduce, operators.OpAll, operators.OpSome, operators.OpNone, operators.OpMerge:
 		if arr, ok := args.([]interface{}); ok {
-			sql, err := p.arrayOp.ToSQL(operator, arr)
+			sql, err := p.arrayOp.ToSQLAtPath(operator, arr, path)
 			return sql, p.wrapOperatorError(operator, path, err)
 		}
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
@@ -639,7 +639,7 @@ func (p *Parser) parseOperatorParam(operator string, args interface{}, path stri
 
 	case operators.OpMap, operators.OpFilter, operators.OpReduce, operators.OpAll, operators.OpSome, operators.OpNone, operators.OpMerge:
 		if arr, ok := args.([]interface{}); ok {
-			sql, err := p.arrayOp.ToSQLParam(operator, arr, pc)
+			sql, err := p.arrayOp.ToSQLParamAtPath(operator, arr, pc, path)
 			return sql, p.wrapOperatorError(operator, path, err)
 		}
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
