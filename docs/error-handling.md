@@ -69,7 +69,7 @@ All errors are wrapped in a `TranspileError` type that includes:
 
 ## Programmatic Error Handling
 
-Nested array/custom-operator failures preserve full JSONPath context. For example, a custom operator failure inside a map transform can report paths like `$.map[1].and[0].oops` instead of a truncated root path.
+Nested array/custom-operator failures preserve full JSONPath context. This also applies when an array operator is nested under non-array parents (for example `==` or `and`). For example, a custom operator failure inside a nested map can report paths like `$.==.map[0][1].oops` instead of a truncated root path.
 
 ### Method 1: Use Helper Function
 

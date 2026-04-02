@@ -359,11 +359,17 @@ func (p *Parser) processArg(arg interface{}, path string, index int) (interface{
 
 				// It's a built-in operator - recursively process its arguments
 				// to handle any nested custom operators.
-				// Array operators are handled specially: keep their arguments raw so
-				// ArrayOperator can apply scope-aware rewrites before custom operators
-				// are parsed (important for item/current/accumulator with schema).
+				// Array operators are handled specially: parse them immediately with
+				// their full operatorPath so nested custom-operator failures preserve
+				// complete JSONPath context under non-array parents (e.g. == / and).
+				// ArrayOperator still performs scope-aware rewrites before nested
+				// custom operators are parsed.
 				if p.isArrayOperator(operator) {
-					return map[string]interface{}{operator: opArgs}, nil
+					sql, err := p.parseOperator(operator, opArgs, operatorPath)
+					if err != nil {
+						return nil, err
+					}
+					return operators.SQLResult(sql), nil
 				}
 				processedOpArgs, err := p.processOpArgs(opArgs, operatorPath)
 				if err != nil {
@@ -685,7 +691,11 @@ func (p *Parser) processArgParam(arg interface{}, path string, index int, pc *pa
 				}
 
 				if p.isArrayOperator(operator) {
-					return map[string]interface{}{operator: opArgs}, nil
+					sql, err := p.parseOperatorParam(operator, opArgs, operatorPath, pc)
+					if err != nil {
+						return nil, err
+					}
+					return operators.SQLResult(sql), nil
 				}
 				processedOpArgs, err := p.processOpArgsParam(opArgs, operatorPath, pc)
 				if err != nil {
