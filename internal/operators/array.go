@@ -40,6 +40,7 @@ type ArrayOperator struct {
 	scopeDepth   int
 	visibleElems []string
 	exprPath     string
+	valueScope   bool
 }
 
 // NewArrayOperator creates a new ArrayOperator instance with optional config.
@@ -53,6 +54,7 @@ func NewArrayOperator(config *OperatorConfig) *ArrayOperator {
 		scopeDepth:   0,
 		visibleElems: []string{ElemVar},
 		exprPath:     "$",
+		valueScope:   false,
 	}
 }
 
@@ -73,6 +75,7 @@ func (a *ArrayOperator) withChildScope() *ArrayOperator {
 		scopeDepth:   a.scopeDepth + 1,
 		visibleElems: append([]string{}, a.visibleElems...),
 		exprPath:     a.exprPath,
+		valueScope:   a.valueScope,
 	}
 	childAlias := child.elemAlias()
 	child.visibleElems = append(child.visibleElems, childAlias)
@@ -92,6 +95,22 @@ func (a *ArrayOperator) withPath(path string) *ArrayOperator {
 		scopeDepth:   a.scopeDepth,
 		visibleElems: append([]string{}, a.visibleElems...),
 		exprPath:     path,
+		valueScope:   a.valueScope,
+	}
+	return child
+}
+
+func (a *ArrayOperator) withValueScope(enabled bool) *ArrayOperator {
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     a.exprPath,
+		valueScope:   enabled,
 	}
 	return child
 }
@@ -1047,6 +1066,7 @@ func (a *ArrayOperator) expressionToSQLWithContextAndPath(expr interface{}, allo
 						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
 						target = a.withChildScope()
 					}
+					target = target.withValueScope(true)
 					nestedPath := tperrors.BuildPath(path, operator, -1)
 					return target.ToSQLAtPath(operator, nestedArgs, nestedPath)
 				}
@@ -1196,9 +1216,12 @@ func (a *ArrayOperator) arrayScopeVarToSQL(varExpr interface{}) (string, bool, e
 func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool, error) {
 	if varName, ok := varExpr.(string); ok {
 		if varName == "" {
+			if !a.valueScope {
+				return "", false, nil
+			}
 			return a.elemAlias(), true, nil
 		}
-		if a.isVisibleElemPath(varName) {
+		if a.valueScope && a.isVisibleElemPath(varName) {
 			if err := a.validateArrayScopeIdentifier(varName); err != nil {
 				return "", true, err
 			}
@@ -1218,8 +1241,11 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 		var mapped string
 		switch {
 		case varName == "":
+			if !a.valueScope {
+				return "", false, nil
+			}
 			mapped = a.elemAlias()
-		case a.isVisibleElemPath(varName):
+		case a.valueScope && a.isVisibleElemPath(varName):
 			if err := a.validateArrayScopeIdentifier(varName); err != nil {
 				return "", true, err
 			}
@@ -1869,6 +1895,7 @@ func (a *ArrayOperator) expressionToSQLParamWithContextAndPath(
 						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
 						target = a.withChildScope()
 					}
+					target = target.withValueScope(true)
 					nestedPath := tperrors.BuildPath(path, operator, -1)
 					return target.ToSQLParamAtPath(operator, nestedArgs, pc, nestedPath)
 				}
@@ -1936,9 +1963,12 @@ func (a *ArrayOperator) arrayScopeVarToSQLParam(varExpr interface{}, pc *params.
 func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *params.ParamCollector) (string, bool, error) {
 	if varName, ok := varExpr.(string); ok {
 		if varName == "" {
+			if !a.valueScope {
+				return "", false, nil
+			}
 			return a.elemAlias(), true, nil
 		}
-		if a.isVisibleElemPath(varName) {
+		if a.valueScope && a.isVisibleElemPath(varName) {
 			if err := a.validateArrayScopeIdentifier(varName); err != nil {
 				return "", true, err
 			}
@@ -1958,8 +1988,11 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 		var mapped string
 		switch {
 		case varName == "":
+			if !a.valueScope {
+				return "", false, nil
+			}
 			mapped = a.elemAlias()
-		case a.isVisibleElemPath(varName):
+		case a.valueScope && a.isVisibleElemPath(varName):
 			if err := a.validateArrayScopeIdentifier(varName); err != nil {
 				return "", true, err
 			}
