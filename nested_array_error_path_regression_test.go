@@ -1,0 +1,98 @@
+package jsonlogic2sql
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func decodeLogicMapForPathTest(t *testing.T, logic string) map[string]interface{} {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(logic), &m); err != nil {
+		t.Fatalf("json.Unmarshal(map) failed: %v", err)
+	}
+	return m
+}
+
+func assertNestedPathNotTruncated(t *testing.T, err error, parentOp string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "oops") {
+		t.Fatalf("expected error to mention custom operator, got: %v", err)
+	}
+	if strings.Contains(msg, "$[1].oops") {
+		t.Fatalf("path is truncated (missing parent context): %v", err)
+	}
+	if !strings.Contains(msg, "$."+parentOp) {
+		t.Fatalf("expected parent operator path in error, got: %v", err)
+	}
+	if !strings.Contains(msg, ".map") {
+		t.Fatalf("expected nested map segment in error path, got: %v", err)
+	}
+}
+
+func TestNestedArrayCustomOperatorErrorPath_Preserved_InlineAndParam(t *testing.T) {
+	t.Parallel()
+
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	cases := []struct {
+		name     string
+		parentOp string
+		logic    string
+	}{
+		{
+			name:     "array under comparison",
+			parentOp: "==",
+			logic:    `{"==":[{"map":[{"var":"nums"},{"oops":[{"var":"item"}]}]},1]}`,
+		},
+		{
+			name:     "array under logical",
+			parentOp: "and",
+			logic:    `{"and":[true,{"map":[{"var":"nums"},{"oops":[{"var":"item"}]}]}]}`,
+		},
+	}
+
+	for _, d := range dialects {
+		t.Run(d.String(), func(t *testing.T) {
+			t.Parallel()
+
+			tr, err := NewTranspiler(d)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error: %v", err)
+			}
+			tr.RegisterOperatorFunc("oops", func(_ string, _ []interface{}) (string, error) {
+				return "", fmt.Errorf("boom")
+			})
+
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					logicMap := decodeLogicMapForPathTest(t, tc.logic)
+
+					_, err := tr.Transpile(tc.logic)
+					assertNestedPathNotTruncated(t, err, tc.parentOp)
+
+					_, _, err = tr.TranspileParameterized(tc.logic)
+					assertNestedPathNotTruncated(t, err, tc.parentOp)
+
+					_, err = tr.TranspileFromMap(logicMap)
+					assertNestedPathNotTruncated(t, err, tc.parentOp)
+
+					_, _, err = tr.TranspileParameterizedFromMap(logicMap)
+					assertNestedPathNotTruncated(t, err, tc.parentOp)
+				})
+			}
+		})
+	}
+}

@@ -103,6 +103,62 @@ func TestTranspiler_Transpile(t *testing.T) {
 	}
 }
 
+func TestTranspiler_InStringExpressionContainment_NoSchema(t *testing.T) {
+	tests := []struct {
+		name      string
+		dialect   Dialect
+		jsonLogic string
+		wantSQL   string
+	}{
+		{
+			name:      "bigquery",
+			dialect:   DialectBigQuery,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, 1, 2), '-x')) > 0",
+		},
+		{
+			name:      "spanner",
+			dialect:   DialectSpanner,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, 1, 2), '-x')) > 0",
+		},
+		{
+			name:      "postgresql",
+			dialect:   DialectPostgreSQL,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE POSITION(CONCAT(SUBSTR(profile.first, 1, 2), '-x') IN profile.name) > 0",
+		},
+		{
+			name:      "duckdb",
+			dialect:   DialectDuckDB,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE STRPOS(profile.name, CONCAT(SUBSTR(profile.first, 1, 2), '-x')) > 0",
+		},
+		{
+			name:      "clickhouse",
+			dialect:   DialectClickHouse,
+			jsonLogic: `{"in": [{"cat": [{"substr": [{"var": "profile.first"}, 0, 2]}, "-x"]}, {"var": "profile.name"}]}`,
+			wantSQL:   "WHERE position(profile.name, CONCAT(substring(profile.first, 1, 2), '-x')) > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr, err := NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			gotSQL, err := tr.Transpile(tt.jsonLogic)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Errorf("Transpile() = %q, want %q", gotSQL, tt.wantSQL)
+			}
+		})
+	}
+}
+
 func TestTranspiler_TranspileFromMap(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 

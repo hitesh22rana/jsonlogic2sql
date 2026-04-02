@@ -10,6 +10,8 @@ A Go library that converts JSON Logic expressions into SQL. This library provide
 - **Custom Operators**: Extensible registry pattern for custom SQL functions
 - **Schema Validation**: Optional field schema for strict column validation
 - **Structured Errors**: Error codes and JSONPath locations for debugging
+- **Regression Matrices**: Cross-dialect schema-aware/schema-less matrix tests for nested built-in and custom operator flows
+- **Array Scope Safety**: Nested array operators keep inner/outer element aliases distinct where required
 - **Library & CLI**: Both programmatic API and interactive REPL
 
 ## Quick Start
@@ -105,6 +107,8 @@ func main() {
 
 > **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. For maximum safety, use the [parameterized query API](docs/parameterized-queries.md) which generates SQL with bind placeholders instead of inlined literals.
 
+> **`in` Operator Inference:** Without a schema, `in` uses heuristics to infer string containment vs array membership. For deterministic behavior (especially with complex expressions), prefer schema-aware mode.
+
 ## Interactive REPL
 
 ```bash
@@ -132,7 +136,7 @@ SQL: WHERE (a || b)
 ## Development
 
 ```bash
-make test       # Run all tests (3,000+ test cases)
+make test       # Run all tests (including cross-dialect matrix suites)
 make bench      # Run benchmarks
 make build      # Build REPL binary
 make build/wasm # Build WASM binary for browser playground

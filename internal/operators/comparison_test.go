@@ -1505,6 +1505,89 @@ func TestComparisonOperator_handleIn_NoSchema_VarRightSide(t *testing.T) {
 	}
 }
 
+func TestComparisonOperator_handleIn_NoSchema_StringExpressionHeuristic(t *testing.T) {
+	leftStringExpr := map[string]interface{}{
+		OpCat: []interface{}{
+			map[string]interface{}{
+				OpSubstr: []interface{}{
+					map[string]interface{}{OpVar: "profile.first"},
+					float64(0),
+					float64(2),
+				},
+			},
+			"-x",
+		},
+	}
+	leftNumericExpr := map[string]interface{}{
+		"+": []interface{}{float64(1), float64(2)},
+	}
+	rightVar := map[string]interface{}{OpVar: "profile.name"}
+
+	tests := []struct {
+		name          string
+		d             dialect.Dialect
+		leftArg       interface{}
+		expectedSQL   string
+		expectedError bool
+	}{
+		{
+			name:        "bigquery nested string expression uses containment",
+			d:           dialect.DialectBigQuery,
+			leftArg:     leftStringExpr,
+			expectedSQL: "STRPOS(profile.name, CONCAT(SUBSTR(profile.first, 1, 2), '-x')) > 0",
+		},
+		{
+			name:        "postgres nested string expression uses containment",
+			d:           dialect.DialectPostgreSQL,
+			leftArg:     leftStringExpr,
+			expectedSQL: "POSITION(CONCAT(SUBSTR(profile.first, 1, 2), '-x') IN profile.name) > 0",
+		},
+		{
+			name:        "clickhouse nested string expression uses containment",
+			d:           dialect.DialectClickHouse,
+			leftArg:     leftStringExpr,
+			expectedSQL: "position(profile.name, CONCAT(substring(profile.first, 1, 2), '-x')) > 0",
+		},
+		{
+			name:        "bigquery numeric expression still uses membership fallback",
+			d:           dialect.DialectBigQuery,
+			leftArg:     leftNumericExpr,
+			expectedSQL: "(1 + 2) IN UNNEST(profile.name)",
+		},
+		{
+			name:        "postgres numeric expression still uses membership fallback",
+			d:           dialect.DialectPostgreSQL,
+			leftArg:     leftNumericExpr,
+			expectedSQL: "(1 + 2) = ANY(profile.name)",
+		},
+		{
+			name:        "clickhouse numeric expression still uses membership fallback",
+			d:           dialect.DialectClickHouse,
+			leftArg:     leftNumericExpr,
+			expectedSQL: "has(profile.name, (1 + 2))",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			op := NewComparisonOperator(NewOperatorConfig(tt.d, nil))
+			got, err := op.ToSQL("in", []interface{}{tt.leftArg, rightVar})
+			if tt.expectedError {
+				if err == nil {
+					t.Fatal("ToSQL() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ToSQL() error = %v", err)
+			}
+			if got != tt.expectedSQL {
+				t.Fatalf("ToSQL() = %q, want %q", got, tt.expectedSQL)
+			}
+		})
+	}
+}
+
 func TestComparisonOperator_handleIn_WithEnumValidation(t *testing.T) {
 	schema := newComparisonSchemaProvider(map[string]string{
 		"status": "string",
@@ -2041,6 +2124,119 @@ func TestComparisonOperator_handleInParam(t *testing.T) {
 			t.Errorf("handleInParam() = %q, want %q", got, want)
 		}
 	})
+}
+
+func TestComparisonOperator_handleInParam_NoSchema_StringExpressionHeuristic(t *testing.T) {
+	leftStringExpr := map[string]interface{}{
+		OpCat: []interface{}{
+			map[string]interface{}{
+				OpSubstr: []interface{}{
+					map[string]interface{}{OpVar: "profile.first"},
+					float64(0),
+					float64(2),
+				},
+			},
+			"-x",
+		},
+	}
+	leftNumericExpr := map[string]interface{}{
+		"+": []interface{}{float64(1), float64(2)},
+	}
+	rightVar := map[string]interface{}{OpVar: "profile.name"}
+
+	tests := []struct {
+		name       string
+		d          dialect.Dialect
+		style      params.PlaceholderStyle
+		leftArg    interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+	}{
+		{
+			name:    "bigquery nested string expression uses containment",
+			d:       dialect.DialectBigQuery,
+			style:   params.PlaceholderNamed,
+			leftArg: leftStringExpr,
+			wantSQL: "STRPOS(profile.name, CONCAT(SUBSTR(profile.first, (@p1 + 1), @p2), @p3)) > 0",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:    "postgres nested string expression uses containment",
+			d:       dialect.DialectPostgreSQL,
+			style:   params.PlaceholderPositional,
+			leftArg: leftStringExpr,
+			wantSQL: "POSITION(CONCAT(SUBSTR(profile.first, ($1 + 1), $2), $3) IN profile.name) > 0",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:    "clickhouse nested string expression uses containment",
+			d:       dialect.DialectClickHouse,
+			style:   params.PlaceholderNamed,
+			leftArg: leftStringExpr,
+			wantSQL: "position(profile.name, CONCAT(substring(profile.first, (@p1 + 1), @p2), @p3)) > 0",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(0)},
+				{Name: "p2", Value: float64(2)},
+				{Name: "p3", Value: "-x"},
+			},
+		},
+		{
+			name:    "bigquery numeric expression still uses membership fallback",
+			d:       dialect.DialectBigQuery,
+			style:   params.PlaceholderNamed,
+			leftArg: leftNumericExpr,
+			wantSQL: "(@p1 + @p2) IN UNNEST(profile.name)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(1)},
+				{Name: "p2", Value: float64(2)},
+			},
+		},
+		{
+			name:    "postgres numeric expression still uses membership fallback",
+			d:       dialect.DialectPostgreSQL,
+			style:   params.PlaceholderPositional,
+			leftArg: leftNumericExpr,
+			wantSQL: "($1 + $2) = ANY(profile.name)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(1)},
+				{Name: "p2", Value: float64(2)},
+			},
+		},
+		{
+			name:    "clickhouse numeric expression still uses membership fallback",
+			d:       dialect.DialectClickHouse,
+			style:   params.PlaceholderNamed,
+			leftArg: leftNumericExpr,
+			wantSQL: "has(profile.name, (@p1 + @p2))",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: float64(1)},
+				{Name: "p2", Value: float64(2)},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			op := NewComparisonOperator(NewOperatorConfig(tt.d, nil))
+			pc := params.NewParamCollector(tt.style)
+			got, err := op.ToSQLParam("in", []interface{}{tt.leftArg, rightVar}, pc)
+			if err != nil {
+				t.Fatalf("ToSQLParam() error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQLParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
 }
 
 func TestComparisonOperator_InDoesNotMutateInputArray(t *testing.T) {

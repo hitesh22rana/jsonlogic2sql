@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
+	tperrors "github.com/h22rana/jsonlogic2sql/internal/errors"
 	"github.com/h22rana/jsonlogic2sql/internal/params"
 )
 
@@ -26,6 +27,7 @@ var (
 	itemPattern        = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(ItemVar) + `\b`)
 	currentPattern     = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(CurrentVar) + `\b`)
 	accumulatorPattern = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
+	safeIdentifierExpr = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -35,6 +37,10 @@ type ArrayOperator struct {
 	comparisonOp *ComparisonOperator
 	logicalOp    *LogicalOperator
 	numericOp    *NumericOperator
+	scopeDepth   int
+	visibleElems []string
+	exprPath     string
+	valueScope   bool
 }
 
 // NewArrayOperator creates a new ArrayOperator instance with optional config.
@@ -45,6 +51,303 @@ func NewArrayOperator(config *OperatorConfig) *ArrayOperator {
 		comparisonOp: NewComparisonOperator(config),
 		logicalOp:    nil, // Will be created lazily
 		numericOp:    NewNumericOperator(config),
+		scopeDepth:   0,
+		visibleElems: []string{ElemVar},
+		exprPath:     "$",
+		valueScope:   false,
+	}
+}
+
+func (a *ArrayOperator) elemAlias() string {
+	if a == nil || a.scopeDepth == 0 {
+		return ElemVar
+	}
+	return fmt.Sprintf("%s%d", ElemVar, a.scopeDepth)
+}
+
+func (a *ArrayOperator) withChildScope() *ArrayOperator {
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth + 1,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     a.exprPath,
+		valueScope:   a.valueScope,
+	}
+	childAlias := child.elemAlias()
+	child.visibleElems = append(child.visibleElems, childAlias)
+	return child
+}
+
+func (a *ArrayOperator) withPath(path string) *ArrayOperator {
+	if path == "" {
+		path = "$"
+	}
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     path,
+		valueScope:   a.valueScope,
+	}
+	return child
+}
+
+func (a *ArrayOperator) withValueScope(enabled bool) *ArrayOperator {
+	child := &ArrayOperator{
+		config:       a.config,
+		dataOp:       a.dataOp,
+		comparisonOp: a.comparisonOp,
+		logicalOp:    a.logicalOp,
+		numericOp:    a.numericOp,
+		scopeDepth:   a.scopeDepth,
+		visibleElems: append([]string{}, a.visibleElems...),
+		exprPath:     a.exprPath,
+		valueScope:   enabled,
+	}
+	return child
+}
+
+func (a *ArrayOperator) currentPath() string {
+	if a == nil || a.exprPath == "" {
+		return "$"
+	}
+	return a.exprPath
+}
+
+func (a *ArrayOperator) argPath(index int) string {
+	return tperrors.BuildArrayPath(a.currentPath(), index)
+}
+
+func (a *ArrayOperator) isVisibleElemPath(name string) bool {
+	for _, alias := range a.visibleElems {
+		if name == alias || strings.HasPrefix(name, alias+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *ArrayOperator) shouldUseChildScope(op string, args []interface{}) bool {
+	// Use a child element alias only for nested reduce when reduce arguments
+	// reference the outer element alias. Other nested array operators keep the
+	// historical alias behavior to preserve existing SQL output expectations.
+	if op == OpReduce {
+		if len(args) > 2 && a.referencesVisibleElemAlias(args[2]) {
+			return true
+		}
+		if len(args) > 1 && len(args) > 0 && a.referencesVisibleElemAlias(args[0]) {
+			plain, dotted := a.elementRefUsage(args[1])
+			return plain && dotted
+		}
+		return false
+	}
+	if op == OpMap || op == OpFilter || op == OpAll || op == OpSome || op == OpNone {
+		if len(args) > 1 && len(args) > 0 && a.referencesVisibleElemAlias(args[0]) {
+			plain, dotted := a.elementRefUsage(args[1])
+			return plain && dotted
+		}
+	}
+	return false
+}
+
+func (a *ArrayOperator) referencesVisibleElemAlias(expr interface{}) bool {
+	switch e := expr.(type) {
+	case map[string]interface{}:
+		if len(e) == 1 {
+			if varName, hasVar := e[OpVar]; hasVar {
+				switch v := varName.(type) {
+				case string:
+					return a.isVisibleElemPath(v)
+				case []interface{}:
+					if len(v) == 0 {
+						return false
+					}
+					if s, ok := v[0].(string); ok {
+						return a.isVisibleElemPath(s)
+					}
+				}
+			}
+		}
+		for _, v := range e {
+			if a.referencesVisibleElemAlias(v) {
+				return true
+			}
+		}
+		return false
+	case []interface{}:
+		for _, v := range e {
+			if a.referencesVisibleElemAlias(v) {
+				return true
+			}
+		}
+		return false
+	case ProcessedValue:
+		if e.IsSQL {
+			for _, alias := range a.visibleElems {
+				if strings.Contains(e.Value, alias+".") || e.Value == alias {
+					return true
+				}
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// elementRefUsage reports whether an expression contains plain item/current refs
+// and dotted item./current. refs. Nested array lambdas are not traversed to avoid
+// crossing scope boundaries.
+func (a *ArrayOperator) elementRefUsage(expr interface{}) (plain, dotted bool) {
+	switch e := expr.(type) {
+	case map[string]interface{}:
+		if len(e) == 1 {
+			if varName, hasVar := e[OpVar]; hasVar {
+				switch v := varName.(type) {
+				case string:
+					switch {
+					case v == ItemVar || v == CurrentVar || v == "":
+						plain = true
+					case strings.HasPrefix(v, ItemVar+".") || strings.HasPrefix(v, CurrentVar+"."):
+						dotted = true
+					}
+				case []interface{}:
+					if len(v) > 0 {
+						if s, ok := v[0].(string); ok {
+							switch {
+							case s == ItemVar || s == CurrentVar || s == "":
+								plain = true
+							case strings.HasPrefix(s, ItemVar+".") || strings.HasPrefix(s, CurrentVar+"."):
+								dotted = true
+							}
+						}
+					}
+				}
+				return plain, dotted
+			}
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					arr, ok := opArgs.([]interface{})
+					if !ok {
+						return false, false
+					}
+					if len(arr) > 0 {
+						p, d := a.elementRefUsage(arr[0])
+						plain = plain || p
+						dotted = dotted || d
+					}
+					if opName == OpReduce && len(arr) > 2 {
+						p, d := a.elementRefUsage(arr[2])
+						plain = plain || p
+						dotted = dotted || d
+					}
+					return plain, dotted
+				}
+			}
+		}
+		for _, v := range e {
+			p, d := a.elementRefUsage(v)
+			plain = plain || p
+			dotted = dotted || d
+		}
+		return plain, dotted
+	case []interface{}:
+		for _, v := range e {
+			p, d := a.elementRefUsage(v)
+			plain = plain || p
+			dotted = dotted || d
+		}
+		return plain, dotted
+	default:
+		return false, false
+	}
+}
+
+func (a *ArrayOperator) rewriteOuterDottedForNested(op string, args []interface{}, outerAlias string) []interface{} {
+	if op != OpMap && op != OpFilter && op != OpAll && op != OpSome && op != OpNone && op != OpReduce {
+		return args
+	}
+	if len(args) < 2 {
+		return args
+	}
+	newArgs := make([]interface{}, len(args))
+	copy(newArgs, args)
+	newArgs[1] = a.rewriteOuterDottedElementRefs(args[1], outerAlias)
+	return newArgs
+}
+
+// rewriteOuterDottedElementRefs rewrites dotted item references to an explicit
+// outer alias (e.g. item.base -> elem.base), while leaving current/current.*
+// untouched so inner-scope current semantics remain intact.
+// Nested array lambdas are not rewritten (only their source/initial outer-scope args).
+func (a *ArrayOperator) rewriteOuterDottedElementRefs(expr interface{}, outerAlias string) interface{} {
+	switch e := expr.(type) {
+	case map[string]interface{}:
+		if len(e) == 1 {
+			if varName, hasVar := e[OpVar]; hasVar {
+				if varStr, ok := varName.(string); ok {
+					switch {
+					case strings.HasPrefix(varStr, ItemVar+"."):
+						return map[string]interface{}{OpVar: outerAlias + varStr[len(ItemVar):]}
+					default:
+						return e
+					}
+				}
+				if varArr, ok := varName.([]interface{}); ok && len(varArr) > 0 {
+					if varStr, ok := varArr[0].(string); ok {
+						switch {
+						case strings.HasPrefix(varStr, ItemVar+"."):
+							newArr := make([]interface{}, len(varArr))
+							copy(newArr, varArr)
+							newArr[0] = outerAlias + varStr[len(ItemVar):]
+							return map[string]interface{}{OpVar: newArr}
+						default:
+							return e
+						}
+					}
+				}
+				return e
+			}
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					if arr, ok := opArgs.([]interface{}); ok {
+						newArgs := make([]interface{}, len(arr))
+						copy(newArgs, arr)
+						if len(newArgs) > 0 {
+							newArgs[0] = a.rewriteOuterDottedElementRefs(arr[0], outerAlias)
+						}
+						if opName == OpReduce && len(newArgs) > 2 {
+							newArgs[2] = a.rewriteOuterDottedElementRefs(arr[2], outerAlias)
+						}
+						return map[string]interface{}{opName: newArgs}
+					}
+				}
+			}
+			for opName, opArgs := range e {
+				return map[string]interface{}{opName: a.rewriteOuterDottedElementRefs(opArgs, outerAlias)}
+			}
+		}
+		result := make(map[string]interface{}, len(e))
+		for k, v := range e {
+			result[k] = a.rewriteOuterDottedElementRefs(v, outerAlias)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(e))
+		for i, v := range e {
+			result[i] = a.rewriteOuterDottedElementRefs(v, outerAlias)
+		}
+		return result
+	default:
+		return expr
 	}
 }
 
@@ -149,6 +452,12 @@ func (a *ArrayOperator) ToSQL(operator string, args []interface{}) (string, erro
 	}
 }
 
+// ToSQLAtPath converts an array operation to SQL using the provided JSONPath
+// as the operator context for nested expression error reporting.
+func (a *ArrayOperator) ToSQLAtPath(operator string, args []interface{}, path string) (string, error) {
+	return a.withPath(path).ToSQL(operator, args)
+}
+
 // handleMap converts map operator to SQL.
 // Generates: ARRAY(SELECT transformation FROM UNNEST(array) AS elem).
 // For ClickHouse: Uses arrayMap or subquery with arrayJoin.
@@ -170,27 +479,29 @@ func (a *ArrayOperator) handleMap(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 
 	// Second argument: transformation expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	transformation, err := a.expressionToSQL(rewritten)
+	transformation, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
 	transformation = a.replaceElementRefsInSQL(transformation)
 
+	alias := a.elemAlias()
+
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformation, array), nil
+		return fmt.Sprintf("arrayMap(%s -> %s, %s)", alias, transformation, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s)", transformation, array, alias), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s)", transformation, array, alias), nil
 }
 
 // handleFilter converts filter operator to SQL.
@@ -214,27 +525,29 @@ func (a *ArrayOperator) handleFilter(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
 
+	alias := a.elemAlias()
+
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("arrayFilter(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s WHERE %s)", alias, array, alias, condition), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s WHERE %s)", alias, array, alias, condition), nil
 }
 
 // handleReduce converts reduce operator to SQL.
@@ -263,7 +576,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce array argument: %w", err)
 	}
@@ -272,17 +585,19 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	reducerExpr := args[1]
 
 	// Third argument: initial value
-	initial, err := a.valueToSQL(args[2])
+	initial, err := a.valueToSQLAtPath(args[2], a.argPath(2))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce initial argument: %w", err)
 	}
 
+	alias := a.elemAlias()
+
 	// Check for common reduction patterns and optimize
 	if pattern := a.detectAggregatePattern(reducerExpr); pattern != nil {
 		// Build the element reference: "elem" or "elem.field" if field suffix exists
-		elemRef := ElemVar
+		elemRef := alias
 		if pattern.fieldSuffix != "" {
-			elemRef = ElemVar + "." + pattern.fieldSuffix
+			elemRef = alias + "." + pattern.fieldSuffix
 		}
 
 		// Generate optimized aggregate SQL based on dialect
@@ -299,12 +614,12 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 				initial, strings.ToLower(pattern.function), array), nil
 		case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 			// Standard SQL: initial + COALESCE((SELECT AGG(elem.field) FROM UNNEST(array) AS elem), 0)
-			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
-				initial, pattern.function, elemRef, array), nil
+			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS %s), 0)",
+				initial, pattern.function, elemRef, array, alias), nil
 		}
 		// Fallback for any future dialects
-		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
-			initial, pattern.function, elemRef, array), nil
+		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS %s), 0)",
+			initial, pattern.function, elemRef, array, alias), nil
 	}
 
 	// General case: rewrite element vars in the AST (item/current → elem),
@@ -313,7 +628,7 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	// accumulator substitution must happen LAST so that the safety net
 	// doesn't corrupt initial values containing "current"/"item" field names.
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQL(rewritten)
+	reducerWithElem, err := a.expressionToSQLWithContextAndPath(rewritten, true, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -324,12 +639,12 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
 		// ClickHouse uses arrayFold for general reduction (ClickHouse 22.8+)
-		return fmt.Sprintf("arrayFold((acc, elem) -> %s, %s, %s)", reducerWithElem, array, initial), nil
+		return fmt.Sprintf("arrayFold((acc, %s) -> %s, %s, %s)", alias, reducerWithElem, array, initial), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL using a subquery
-		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS %s)", reducerWithElem, array, alias), nil
 	}
-	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS %s)", reducerWithElem, array, alias), nil
 }
 
 // aggregatePattern represents a detected aggregate pattern with optional field suffix.
@@ -442,14 +757,14 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
@@ -460,13 +775,14 @@ func (a *ArrayOperator) handleAll(args []interface{}) (string, error) {
 	// Without a guard, SQL NOT EXISTS on an empty UNNEST returns true (no rows to violate).
 	// We add an emptiness check: array must be non-null and non-empty.
 	lengthCheck := a.config.ArrayLengthFunc(array)
+	alias := a.elemAlias()
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("(%s > 0 AND arrayAll(elem -> %s, %s))", lengthCheck, condition, array), nil
+		return fmt.Sprintf("(%s > 0 AND arrayAll(%s -> %s, %s))", lengthCheck, alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE NOT (%s)))", lengthCheck, array, alias, condition), nil
 	}
-	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE NOT (%s)))", lengthCheck, array, alias, condition), nil
 }
 
 // handleSome converts some operator to SQL.
@@ -491,28 +807,30 @@ func (a *ArrayOperator) handleSome(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
 
+	alias := a.elemAlias()
+
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayExists(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("arrayExists(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 	}
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 }
 
 // handleNone converts none operator to SQL.
@@ -537,28 +855,30 @@ func (a *ArrayOperator) handleNone(args []interface{}) (string, error) {
 	}
 
 	// First argument: array
-	array, err := a.valueToSQL(args[0])
+	array, err := a.valueToSQLAtPath(args[0], a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 
 	// Second argument: condition expression - rewrite element vars before SQL generation
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQL(rewritten)
+	condition, err := a.expressionToSQLWithContextAndPath(rewritten, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
 
+	alias := a.elemAlias()
+
 	// Generate SQL based on dialect
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("NOT arrayExists(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
 		// Standard SQL: NOT EXISTS (SELECT 1 FROM UNNEST(array) AS elem WHERE condition)
-		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 	}
-	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 }
 
 // handleMerge converts merge operator to SQL.
@@ -587,7 +907,7 @@ func (a *ArrayOperator) handleMerge(args []interface{}) (string, error) {
 	// Convert all array arguments to SQL
 	arrays := make([]string, len(args))
 	for i, arg := range args {
-		array, err := a.valueToSQL(arg)
+		array, err := a.valueToSQLAtPath(arg, a.argPath(i))
 		if err != nil {
 			return "", fmt.Errorf("invalid merge array argument %d: %w", i, err)
 		}
@@ -622,6 +942,10 @@ func (a *ArrayOperator) handleMerge(args []interface{}) (string, error) {
 
 // valueToSQL converts a value to SQL, handling var expressions, arrays, and literals.
 func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
+	return a.valueToSQLAtPath(value, a.currentPath())
+}
+
+func (a *ArrayOperator) valueToSQLAtPath(value interface{}, path string) (string, error) {
 	// Handle ProcessedValue (pre-processed SQL from parser)
 	if pv, ok := value.(ProcessedValue); ok {
 		if pv.IsSQL {
@@ -635,10 +959,13 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 	if expr, ok := value.(map[string]interface{}); ok {
 		// Check if it's a var expression
 		if varExpr, hasVar := expr[OpVar]; hasVar {
+			if sql, handled, err := a.arrayInternalVarToSQL(varExpr); handled || err != nil {
+				return sql, err
+			}
 			return a.dataOp.ToSQL(OpVar, []interface{}{varExpr})
 		}
 		// Otherwise, it's a complex expression - convert it using expressionToSQL
-		return a.expressionToSQL(value)
+		return a.expressionToSQLWithContextAndPath(value, false, path)
 	}
 
 	// Handle arrays
@@ -659,15 +986,14 @@ func (a *ArrayOperator) valueToSQL(value interface{}) (string, error) {
 	return a.dataOp.valueToSQL(value)
 }
 
-// expressionToSQL converts a JSON Logic expression to SQL.
-func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
+func (a *ArrayOperator) expressionToSQLWithContextAndPath(expr interface{}, allowAccumulator bool, path string) (string, error) {
 	// Handle ProcessedValue (pre-processed SQL from parser)
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
 		// It's a literal, recursively convert it
-		return a.expressionToSQL(pv.Value)
+		return a.expressionToSQLWithContextAndPath(pv.Value, allowAccumulator, path)
 	}
 
 	// Handle primitive values
@@ -678,9 +1004,8 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 	// Handle var expressions
 	if varExpr, ok := expr.(map[string]interface{}); ok {
 		if varName, hasVar := varExpr[OpVar]; hasVar {
-			// Special case: empty var name represents the current element in array operations
-			if varName == "" {
-				return ElemVar, nil
+			if sql, handled, err := a.arrayScopeVarToSQL(varName); handled || err != nil {
+				return sql, err
 			}
 			return a.dataOp.ToSQL(OpVar, []interface{}{varName})
 		}
@@ -692,26 +1017,71 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten comparison args")
+					}
+					arr = converted
 					return a.comparisonOp.ToSQL(operator, arr)
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten logical args")
+					}
+					arr = converted
 					return a.getLogicalOperator().ToSQL(operator, arr)
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten numeric args")
+					}
+					arr = converted
 					return a.numericOp.ToSQL(operator, arr)
 				}
 			case "map", "filter", "reduce", "all", "some", "none", "merge":
 				// Handle nested array operators
 				if arr, ok := args.([]interface{}); ok {
-					return a.ToSQL(operator, arr)
+					target := a
+					nestedArgs := arr
+					if a.shouldUseChildScope(operator, arr) {
+						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
+						target = a.withChildScope()
+					}
+					target = target.withValueScope(true)
+					nestedPath := tperrors.BuildPath(path, operator, -1)
+					return target.ToSQLAtPath(operator, nestedArgs, nestedPath)
 				}
 			default:
 				// Try to use the expression parser callback for unknown operators
 				// This enables support for custom operators in nested contexts
 				if a.config != nil && a.config.HasExpressionParser() {
-					return a.config.ParseExpression(exprMap, "$")
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorWithContextAndPath(exprMap, allowAccumulator, path)
+					if err != nil {
+						return "", err
+					}
+					if pv, ok := rewrittenExpr.(ProcessedValue); ok && pv.IsSQL {
+						return pv.Value, nil
+					}
+					return a.config.ParseExpression(rewrittenExpr, path)
 				}
 				return "", fmt.Errorf("unsupported operator in array expression: %s", operator)
 			}
@@ -726,8 +1096,9 @@ func (a *ArrayOperator) expressionToSQL(expr interface{}) (string, error) {
 // operators or nested operator chains that may emit literal "item"/"current" tokens
 // not reachable by the AST-level rewrite.
 func (a *ArrayOperator) replaceElementRefsInSQL(sql string) string {
-	sql = replaceWithLiteral(itemPattern, sql, ElemVar)
-	sql = replaceWithLiteral(currentPattern, sql, ElemVar)
+	alias := a.elemAlias()
+	sql = replaceWithLiteral(itemPattern, sql, alias)
+	sql = replaceWithLiteral(currentPattern, sql, alias)
 	return sql
 }
 
@@ -754,17 +1125,226 @@ func (a *ArrayOperator) mapElementVarName(varStr string) string {
 	// Exact matches for element references
 	// Note: empty string ("") is NOT rewritten here - it's handled by expressionToSQL's
 	// special case which returns ElemVar directly without schema validation.
+	alias := a.elemAlias()
 	if varStr == ItemVar || varStr == CurrentVar {
-		return ElemVar
+		return alias
 	}
 	// Dot-notation: "item.field" → "elem.field", "current.field" → "elem.field"
 	if strings.HasPrefix(varStr, ItemVar+".") {
-		return ElemVar + varStr[len(ItemVar):]
+		return alias + varStr[len(ItemVar):]
 	}
 	if strings.HasPrefix(varStr, CurrentVar+".") {
-		return ElemVar + varStr[len(CurrentVar):]
+		return alias + varStr[len(CurrentVar):]
 	}
 	return varStr
+}
+
+func (a *ArrayOperator) validateArrayScopeIdentifier(name string) error {
+	if !safeIdentifierExpr.MatchString(name) {
+		return fmt.Errorf("invalid identifier %q: must match [a-zA-Z_][a-zA-Z0-9_.]*", name)
+	}
+	return nil
+}
+
+// mapArrayScopeVar maps array-scope variable names to the current element alias.
+// It handles direct elem references and JSONLogic aliases ("", "item", "current").
+func (a *ArrayOperator) mapArrayScopeVar(varName string) (string, bool, error) {
+	if varName == "" {
+		return a.elemAlias(), true, nil
+	}
+	if a.isVisibleElemPath(varName) {
+		if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			return "", true, err
+		}
+		return varName, true, nil
+	}
+	mapped := a.mapElementVarName(varName)
+	if mapped != varName {
+		if err := a.validateArrayScopeIdentifier(mapped); err != nil {
+			return "", true, err
+		}
+		return mapped, true, nil
+	}
+	return mapped, false, nil
+}
+
+// arrayScopeVarToSQL resolves array-scope var references without schema validation.
+// This keeps item/current/elem aliases working inside array lambdas when schema mode is enabled.
+func (a *ArrayOperator) arrayScopeVarToSQL(varExpr interface{}) (string, bool, error) {
+	if varName, ok := varExpr.(string); ok {
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
+		if handled {
+			return mapped, true, nil
+		}
+		return "", false, nil
+	}
+
+	if arr, ok := varExpr.([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", false, nil
+		}
+		varName, ok := arr[0].(string)
+		if !ok {
+			return "", false, nil
+		}
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
+		if !handled {
+			return "", false, nil
+		}
+		if len(arr) == 1 {
+			return mapped, true, nil
+		}
+		defaultSQL, err := a.dataOp.valueToSQL(arr[1])
+		if err != nil {
+			return "", true, fmt.Errorf("invalid default value: %w", err)
+		}
+		return fmt.Sprintf("COALESCE(%s, %s)", mapped, defaultSQL), true, nil
+	}
+
+	return "", false, nil
+}
+
+// arrayInternalVarToSQL resolves only internal aliases that are already in elem-scope.
+// Unlike arrayScopeVarToSQL, it does NOT map item/current; this is used in valueToSQL
+// for operands like reduce initial values where current/item should remain outer-scope.
+func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool, error) {
+	if varName, ok := varExpr.(string); ok {
+		if varName == "" {
+			if !a.valueScope {
+				return "", false, nil
+			}
+			return a.elemAlias(), true, nil
+		}
+		if a.valueScope && a.isVisibleElemPath(varName) {
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
+			return varName, true, nil
+		}
+		return "", false, nil
+	}
+
+	if arr, ok := varExpr.([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", false, nil
+		}
+		varName, ok := arr[0].(string)
+		if !ok {
+			return "", false, nil
+		}
+		var mapped string
+		switch {
+		case varName == "":
+			if !a.valueScope {
+				return "", false, nil
+			}
+			mapped = a.elemAlias()
+		case a.valueScope && a.isVisibleElemPath(varName):
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
+			mapped = varName
+		default:
+			return "", false, nil
+		}
+		if len(arr) == 1 {
+			return mapped, true, nil
+		}
+		defaultSQL, err := a.dataOp.valueToSQL(arr[1])
+		if err != nil {
+			return "", true, fmt.Errorf("invalid default value: %w", err)
+		}
+		return fmt.Sprintf("COALESCE(%s, %s)", mapped, defaultSQL), true, nil
+	}
+
+	return "", false, nil
+}
+
+func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContextAndPath(expr interface{}, allowAccumulator bool, path string) (interface{}, error) {
+	switch e := expr.(type) {
+	case map[string]interface{}:
+		if len(e) == 1 {
+			if varName, hasVar := e[OpVar]; hasVar {
+				if allowAccumulator && varName == AccumulatorVar {
+					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
+				}
+				if sql, handled, err := a.arrayScopeVarToSQL(varName); handled || err != nil {
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
+				return e, nil
+			}
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					arr, ok := opArgs.([]interface{})
+					if !ok {
+						return e, nil
+					}
+					newArgs := make([]interface{}, len(arr))
+					copy(newArgs, arr)
+					opPath := tperrors.BuildPath(path, opName, -1)
+					if len(newArgs) > 0 {
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr[0], allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+						if err != nil {
+							return nil, err
+						}
+						newArgs[0] = rewritten
+					}
+					if opName == OpReduce && len(newArgs) > 2 {
+						rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(arr[2], allowAccumulator, tperrors.BuildArrayPath(opPath, 2))
+						if err != nil {
+							return nil, err
+						}
+						newArgs[2] = rewritten
+					}
+					return map[string]interface{}{opName: newArgs}, nil
+				}
+				if !a.isBuiltInOperatorName(opName) && a.config != nil && a.config.HasExpressionParser() {
+					opPath := tperrors.BuildPath(path, opName, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorWithContextAndPath(opArgs, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+					if err != nil {
+						return nil, err
+					}
+					sql, err := a.config.ParseExpression(map[string]interface{}{opName: rewrittenArgs}, path)
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
+			}
+		}
+		result := make(map[string]interface{}, len(e))
+		for k, v := range e {
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(v, allowAccumulator, tperrors.BuildPath(path, k, -1))
+			if err != nil {
+				return nil, err
+			}
+			result[k] = rewritten
+		}
+		return result, nil
+
+	case []interface{}:
+		result := make([]interface{}, len(e))
+		for i, v := range e {
+			rewritten, err := a.rewriteScopedVarsForOperatorWithContextAndPath(v, allowAccumulator, tperrors.BuildArrayPath(path, i))
+			if err != nil {
+				return nil, err
+			}
+			result[i] = rewritten
+		}
+		return result, nil
+
+	default:
+		return expr, nil
+	}
 }
 
 // isArrayOperator returns true if the operator is an array operator that
@@ -772,6 +1352,19 @@ func (a *ArrayOperator) mapElementVarName(varStr string) string {
 func (a *ArrayOperator) isArrayOperator(op string) bool {
 	switch op {
 	case OpMap, OpFilter, OpReduce, OpAll, OpSome, OpNone:
+		return true
+	}
+	return false
+}
+
+func (a *ArrayOperator) isBuiltInOperatorName(op string) bool {
+	switch op {
+	case OpVar, OpMissing, OpMissingSome,
+		OpEqual, OpStrictEqual, OpNotEqual, OpStrictNotEqual, OpGreaterThan, OpGreaterThanOrEqual, OpLessThan, OpLessThanOrEqual, OpIn,
+		OpAnd, OpOr, OpNot, OpDoubleBang, OpIf,
+		OpAdd, OpSubtract, OpMultiply, OpDivide, OpModulo, OpMax, OpMin,
+		OpCat, OpSubstr,
+		OpMap, OpFilter, OpReduce, OpAll, OpSome, OpNone, OpMerge:
 		return true
 	}
 	return false
@@ -790,8 +1383,9 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 	case ProcessedValue:
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		if e.IsSQL {
-			replaced := replaceWithLiteral(itemPattern, e.Value, ElemVar)
-			replaced = replaceWithLiteral(currentPattern, replaced, ElemVar)
+			alias := a.elemAlias()
+			replaced := replaceWithLiteral(itemPattern, e.Value, alias)
+			replaced = replaceWithLiteral(currentPattern, replaced, alias)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -900,6 +1494,11 @@ func (a *ArrayOperator) ToSQLParam(operator string, args []interface{}, pc *para
 	}
 }
 
+// ToSQLParamAtPath is the parameterized variant of ToSQLAtPath. Keep in sync.
+func (a *ArrayOperator) ToSQLParamAtPath(operator string, args []interface{}, pc *params.ParamCollector, path string) (string, error) {
+	return a.withPath(path).ToSQLParam(operator, args, pc)
+}
+
 // handleMapParam is the parameterized variant of handleMap. Keep in sync.
 func (a *ArrayOperator) handleMapParam(args []interface{}, pc *params.ParamCollector) (string, error) {
 	if len(args) != 2 {
@@ -913,24 +1512,25 @@ func (a *ArrayOperator) handleMapParam(args []interface{}, pc *params.ParamColle
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid map array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	transformation, err := a.expressionToSQLParam(rewritten, pc)
+	transformation, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid map transformation argument: %w", err)
 	}
 	transformation = a.replaceElementRefsInSQL(transformation)
+	alias := a.elemAlias()
 
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayMap(elem -> %s, %s)", transformation, array), nil
+		return fmt.Sprintf("arrayMap(%s -> %s, %s)", alias, transformation, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s)", transformation, array, alias), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS elem)", transformation, array), nil
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s)", transformation, array, alias), nil
 }
 
 // handleFilterParam is the parameterized variant of handleFilter. Keep in sync.
@@ -946,24 +1546,25 @@ func (a *ArrayOperator) handleFilterParam(args []interface{}, pc *params.ParamCo
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid filter condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
+	alias := a.elemAlias()
 
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayFilter(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("arrayFilter(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s WHERE %s)", alias, array, alias, condition), nil
 	}
-	return fmt.Sprintf("ARRAY(SELECT elem FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("ARRAY(SELECT %s FROM UNNEST(%s) AS %s WHERE %s)", alias, array, alias, condition), nil
 }
 
 // handleReduceParam is the parameterized variant of handleReduce. Keep in sync.
@@ -979,20 +1580,21 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce array argument: %w", err)
 	}
 	reducerExpr := args[1]
-	initial, err := a.valueToSQLParam(args[2], pc)
+	initial, err := a.valueToSQLParamAtPath(args[2], pc, a.argPath(2))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce initial argument: %w", err)
 	}
+	alias := a.elemAlias()
 
 	if pattern := a.detectAggregatePattern(reducerExpr); pattern != nil {
-		elemRef := ElemVar
+		elemRef := alias
 		if pattern.fieldSuffix != "" {
-			elemRef = ElemVar + "." + pattern.fieldSuffix
+			elemRef = alias + "." + pattern.fieldSuffix
 		}
 
 		switch a.getDialect() {
@@ -1004,15 +1606,15 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 			return fmt.Sprintf("%s + coalesce(arrayReduce('%s', %s), 0)",
 				initial, strings.ToLower(pattern.function), array), nil
 		case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
-				initial, pattern.function, elemRef, array), nil
+			return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS %s), 0)",
+				initial, pattern.function, elemRef, array, alias), nil
 		}
-		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS elem), 0)",
-			initial, pattern.function, elemRef, array), nil
+		return fmt.Sprintf("%s + COALESCE((SELECT %s(%s) FROM UNNEST(%s) AS %s), 0)",
+			initial, pattern.function, elemRef, array, alias), nil
 	}
 
 	rewritten := a.rewriteElementVars(reducerExpr)
-	reducerWithElem, err := a.expressionToSQLParam(rewritten, pc)
+	reducerWithElem, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, true, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid reduce expression: %w", err)
 	}
@@ -1021,11 +1623,11 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayFold((acc, elem) -> %s, %s, %s)", reducerWithElem, array, initial), nil
+		return fmt.Sprintf("arrayFold((acc, %s) -> %s, %s, %s)", alias, reducerWithElem, array, initial), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+		return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS %s)", reducerWithElem, array, alias), nil
 	}
-	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS elem)", reducerWithElem, array), nil
+	return fmt.Sprintf("(SELECT %s FROM UNNEST(%s) AS %s)", reducerWithElem, array, alias), nil
 }
 
 // handleAllParam is the parameterized variant of handleAll. Keep in sync.
@@ -1041,25 +1643,26 @@ func (a *ArrayOperator) handleAllParam(args []interface{}, pc *params.ParamColle
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid all array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid all condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
 
 	lengthCheck := a.config.ArrayLengthFunc(array)
+	alias := a.elemAlias()
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("(%s > 0 AND arrayAll(elem -> %s, %s))", lengthCheck, condition, array), nil
+		return fmt.Sprintf("(%s > 0 AND arrayAll(%s -> %s, %s))", lengthCheck, alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+		return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE NOT (%s)))", lengthCheck, array, alias, condition), nil
 	}
-	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE NOT (%s)))", lengthCheck, array, condition), nil
+	return fmt.Sprintf("(%s > 0 AND NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE NOT (%s)))", lengthCheck, array, alias, condition), nil
 }
 
 // handleSomeParam is the parameterized variant of handleSome. Keep in sync.
@@ -1075,24 +1678,25 @@ func (a *ArrayOperator) handleSomeParam(args []interface{}, pc *params.ParamColl
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid some array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid some condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
+	alias := a.elemAlias()
 
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("arrayExists(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("arrayExists(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 	}
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 }
 
 // handleNoneParam is the parameterized variant of handleNone. Keep in sync.
@@ -1108,24 +1712,25 @@ func (a *ArrayOperator) handleNoneParam(args []interface{}, pc *params.ParamColl
 	if err := a.validateArrayOperand(args[0]); err != nil {
 		return "", err
 	}
-	array, err := a.valueToSQLParam(args[0], pc)
+	array, err := a.valueToSQLParamAtPath(args[0], pc, a.argPath(0))
 	if err != nil {
 		return "", fmt.Errorf("invalid none array argument: %w", err)
 	}
 	rewritten := a.rewriteElementVars(args[1])
-	condition, err := a.expressionToSQLParam(rewritten, pc)
+	condition, err := a.expressionToSQLParamWithContextAndPath(rewritten, pc, false, a.argPath(1))
 	if err != nil {
 		return "", fmt.Errorf("invalid none condition argument: %w", err)
 	}
 	condition = a.replaceElementRefsInSQL(condition)
+	alias := a.elemAlias()
 
 	switch a.getDialect() {
 	case dialect.DialectClickHouse:
-		return fmt.Sprintf("NOT arrayExists(elem -> %s, %s)", condition, array), nil
+		return fmt.Sprintf("NOT arrayExists(%s -> %s, %s)", alias, condition, array), nil
 	case dialect.DialectUnspecified, dialect.DialectBigQuery, dialect.DialectSpanner, dialect.DialectPostgreSQL, dialect.DialectDuckDB:
-		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+		return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 	}
-	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS elem WHERE %s)", array, condition), nil
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM UNNEST(%s) AS %s WHERE %s)", array, alias, condition), nil
 }
 
 // handleMergeParam is the parameterized variant of handleMerge. Keep in sync.
@@ -1145,7 +1750,7 @@ func (a *ArrayOperator) handleMergeParam(args []interface{}, pc *params.ParamCol
 	}
 	arrays := make([]string, len(args))
 	for i, arg := range args {
-		array, err := a.valueToSQLParam(arg, pc)
+		array, err := a.valueToSQLParamAtPath(arg, pc, a.argPath(i))
 		if err != nil {
 			return "", fmt.Errorf("invalid merge array argument %d: %w", i, err)
 		}
@@ -1175,6 +1780,10 @@ func (a *ArrayOperator) handleMergeParam(args []interface{}, pc *params.ParamCol
 
 // valueToSQLParam is the parameterized variant of valueToSQL. Keep in sync.
 func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamCollector) (string, error) {
+	return a.valueToSQLParamAtPath(value, pc, a.currentPath())
+}
+
+func (a *ArrayOperator) valueToSQLParamAtPath(value interface{}, pc *params.ParamCollector, path string) (string, error) {
 	if pv, ok := value.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
@@ -1184,9 +1793,12 @@ func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamColle
 
 	if expr, ok := value.(map[string]interface{}); ok {
 		if varExpr, hasVar := expr[OpVar]; hasVar {
+			if sql, handled, err := a.arrayInternalVarToSQLParam(varExpr, pc); handled || err != nil {
+				return sql, err
+			}
 			return a.dataOp.ToSQLParam(OpVar, []interface{}{varExpr}, pc)
 		}
-		return a.expressionToSQLParam(value, pc)
+		return a.expressionToSQLParamWithContextAndPath(value, pc, false, path)
 	}
 
 	if arr, ok := value.([]interface{}); ok {
@@ -1204,13 +1816,17 @@ func (a *ArrayOperator) valueToSQLParam(value interface{}, pc *params.ParamColle
 	return a.dataOp.valueToSQLParam(value, pc)
 }
 
-// expressionToSQLParam is the parameterized variant of expressionToSQL. Keep in sync.
-func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamCollector) (string, error) {
+func (a *ArrayOperator) expressionToSQLParamWithContextAndPath(
+	expr interface{},
+	pc *params.ParamCollector,
+	allowAccumulator bool,
+	path string,
+) (string, error) {
 	if pv, ok := expr.(ProcessedValue); ok {
 		if pv.IsSQL {
 			return pv.Value, nil
 		}
-		return a.expressionToSQLParam(pv.Value, pc)
+		return a.expressionToSQLParamWithContextAndPath(pv.Value, pc, allowAccumulator, path)
 	}
 
 	if a.isPrimitive(expr) {
@@ -1219,8 +1835,8 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 
 	if varExpr, ok := expr.(map[string]interface{}); ok {
 		if varName, hasVar := varExpr[OpVar]; hasVar {
-			if varName == "" {
-				return ElemVar, nil
+			if sql, handled, err := a.arrayScopeVarToSQLParam(varName, pc); handled || err != nil {
+				return sql, err
 			}
 			return a.dataOp.ToSQLParam(OpVar, []interface{}{varName}, pc)
 		}
@@ -1231,23 +1847,68 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 			switch operator {
 			case "==", "===", "!=", "!==", ">", ">=", "<", "<=", "in":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten comparison args")
+					}
+					arr = converted
 					return a.comparisonOp.ToSQLParam(operator, arr, pc)
 				}
 			case "and", "or", "!", "!!", "if":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten logical args")
+					}
+					arr = converted
 					return a.getLogicalOperator().ToSQLParam(operator, arr, pc)
 				}
 			case "+", "-", "*", "/", "%", "max", "min":
 				if arr, ok := args.([]interface{}); ok {
+					opPath := tperrors.BuildPath(path, operator, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr, pc, allowAccumulator, opPath)
+					if err != nil {
+						return "", err
+					}
+					converted, ok := rewrittenArgs.([]interface{})
+					if !ok {
+						return "", fmt.Errorf("internal error: expected []interface{} for rewritten numeric args")
+					}
+					arr = converted
 					return a.numericOp.ToSQLParam(operator, arr, pc)
 				}
 			case "map", "filter", "reduce", "all", "some", "none", "merge":
 				if arr, ok := args.([]interface{}); ok {
-					return a.ToSQLParam(operator, arr, pc)
+					target := a
+					nestedArgs := arr
+					if a.shouldUseChildScope(operator, arr) {
+						nestedArgs = a.rewriteOuterDottedForNested(operator, arr, a.elemAlias())
+						target = a.withChildScope()
+					}
+					target = target.withValueScope(true)
+					nestedPath := tperrors.BuildPath(path, operator, -1)
+					return target.ToSQLParamAtPath(operator, nestedArgs, pc, nestedPath)
 				}
 			default:
 				if a.config != nil && a.config.HasParamExpressionParser() {
-					return a.config.ParseExpressionParam(exprMap, "$", pc)
+					rewrittenExpr, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(exprMap, pc, allowAccumulator, path)
+					if err != nil {
+						return "", err
+					}
+					if pv, ok := rewrittenExpr.(ProcessedValue); ok && pv.IsSQL {
+						return pv.Value, nil
+					}
+					return a.config.ParseExpressionParam(rewrittenExpr, path, pc)
 				}
 				return "", fmt.Errorf("unsupported operator in array expression: %s", operator)
 			}
@@ -1255,4 +1916,185 @@ func (a *ArrayOperator) expressionToSQLParam(expr interface{}, pc *params.ParamC
 	}
 
 	return "", fmt.Errorf("invalid expression type: %T", expr)
+}
+
+// arrayScopeVarToSQLParam is the parameterized variant of arrayScopeVarToSQL. Keep in sync.
+func (a *ArrayOperator) arrayScopeVarToSQLParam(varExpr interface{}, pc *params.ParamCollector) (string, bool, error) {
+	if varName, ok := varExpr.(string); ok {
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
+		if handled {
+			return mapped, true, nil
+		}
+		return "", false, nil
+	}
+
+	if arr, ok := varExpr.([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", false, nil
+		}
+		varName, ok := arr[0].(string)
+		if !ok {
+			return "", false, nil
+		}
+		mapped, handled, err := a.mapArrayScopeVar(varName)
+		if err != nil {
+			return "", true, err
+		}
+		if !handled {
+			return "", false, nil
+		}
+		if len(arr) == 1 {
+			return mapped, true, nil
+		}
+		defaultSQL, err := a.dataOp.valueToSQLParam(arr[1], pc)
+		if err != nil {
+			return "", true, fmt.Errorf("invalid default value: %w", err)
+		}
+		return fmt.Sprintf("COALESCE(%s, %s)", mapped, defaultSQL), true, nil
+	}
+
+	return "", false, nil
+}
+
+// arrayInternalVarToSQLParam is the parameterized variant of arrayInternalVarToSQL.
+func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *params.ParamCollector) (string, bool, error) {
+	if varName, ok := varExpr.(string); ok {
+		if varName == "" {
+			if !a.valueScope {
+				return "", false, nil
+			}
+			return a.elemAlias(), true, nil
+		}
+		if a.valueScope && a.isVisibleElemPath(varName) {
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
+			return varName, true, nil
+		}
+		return "", false, nil
+	}
+
+	if arr, ok := varExpr.([]interface{}); ok {
+		if len(arr) == 0 {
+			return "", false, nil
+		}
+		varName, ok := arr[0].(string)
+		if !ok {
+			return "", false, nil
+		}
+		var mapped string
+		switch {
+		case varName == "":
+			if !a.valueScope {
+				return "", false, nil
+			}
+			mapped = a.elemAlias()
+		case a.valueScope && a.isVisibleElemPath(varName):
+			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+				return "", true, err
+			}
+			mapped = varName
+		default:
+			return "", false, nil
+		}
+		if len(arr) == 1 {
+			return mapped, true, nil
+		}
+		defaultSQL, err := a.dataOp.valueToSQLParam(arr[1], pc)
+		if err != nil {
+			return "", true, fmt.Errorf("invalid default value: %w", err)
+		}
+		return fmt.Sprintf("COALESCE(%s, %s)", mapped, defaultSQL), true, nil
+	}
+
+	return "", false, nil
+}
+
+func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContextAndPath(
+	expr interface{},
+	pc *params.ParamCollector,
+	allowAccumulator bool,
+	path string,
+) (interface{}, error) {
+	switch e := expr.(type) {
+	case map[string]interface{}:
+		if len(e) == 1 {
+			if varName, hasVar := e[OpVar]; hasVar {
+				if allowAccumulator && varName == AccumulatorVar {
+					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
+				}
+				if sql, handled, err := a.arrayScopeVarToSQLParam(varName, pc); handled || err != nil {
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
+				return e, nil
+			}
+			for opName, opArgs := range e {
+				if a.isArrayOperator(opName) {
+					arr, ok := opArgs.([]interface{})
+					if !ok {
+						return e, nil
+					}
+					newArgs := make([]interface{}, len(arr))
+					copy(newArgs, arr)
+					opPath := tperrors.BuildPath(path, opName, -1)
+					if len(newArgs) > 0 {
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr[0], pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+						if err != nil {
+							return nil, err
+						}
+						newArgs[0] = rewritten
+					}
+					if opName == OpReduce && len(newArgs) > 2 {
+						rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(arr[2], pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 2))
+						if err != nil {
+							return nil, err
+						}
+						newArgs[2] = rewritten
+					}
+					return map[string]interface{}{opName: newArgs}, nil
+				}
+				if !a.isBuiltInOperatorName(opName) && a.config != nil && a.config.HasParamExpressionParser() {
+					opPath := tperrors.BuildPath(path, opName, -1)
+					rewrittenArgs, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(opArgs, pc, allowAccumulator, tperrors.BuildArrayPath(opPath, 0))
+					if err != nil {
+						return nil, err
+					}
+					sql, err := a.config.ParseExpressionParam(map[string]interface{}{opName: rewrittenArgs}, path, pc)
+					if err != nil {
+						return nil, err
+					}
+					return ProcessedValue{Value: sql, IsSQL: true}, nil
+				}
+			}
+		}
+		result := make(map[string]interface{}, len(e))
+		for k, v := range e {
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(v, pc, allowAccumulator, tperrors.BuildPath(path, k, -1))
+			if err != nil {
+				return nil, err
+			}
+			result[k] = rewritten
+		}
+		return result, nil
+
+	case []interface{}:
+		result := make([]interface{}, len(e))
+		for i, v := range e {
+			rewritten, err := a.rewriteScopedVarsForOperatorParamWithContextAndPath(v, pc, allowAccumulator, tperrors.BuildArrayPath(path, i))
+			if err != nil {
+				return nil, err
+			}
+			result[i] = rewritten
+		}
+		return result, nil
+
+	default:
+		return expr, nil
+	}
 }

@@ -262,9 +262,9 @@ func (p *Parser) parseOperator(operator string, args interface{}, path string) (
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
 
 	// Array operators
-	case "map", "filter", "reduce", "all", "some", "none", "merge":
+	case operators.OpMap, operators.OpFilter, operators.OpReduce, operators.OpAll, operators.OpSome, operators.OpNone, operators.OpMerge:
 		if arr, ok := args.([]interface{}); ok {
-			sql, err := p.arrayOp.ToSQL(operator, arr)
+			sql, err := p.arrayOp.ToSQLAtPath(operator, arr, path)
 			return sql, p.wrapOperatorError(operator, path, err)
 		}
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
@@ -303,6 +303,17 @@ func (p *Parser) isBuiltInOperator(operator string) bool {
 		"all": true, "some": true, "none": true, "merge": true,
 	}
 	return builtInOps[operator]
+}
+
+// isArrayOperator checks if an operator introduces/depends on array expression
+// semantics that should be delegated directly to ArrayOperator without parser-level
+// eager argument preprocessing.
+func (p *Parser) isArrayOperator(operator string) bool {
+	switch operator {
+	case operators.OpMap, operators.OpFilter, operators.OpReduce, operators.OpAll, operators.OpSome, operators.OpNone, operators.OpMerge:
+		return true
+	}
+	return false
 }
 
 // processArgs recursively processes arguments to handle custom operators at any nesting level.
@@ -347,7 +358,19 @@ func (p *Parser) processArg(arg interface{}, path string, index int) (interface{
 				}
 
 				// It's a built-in operator - recursively process its arguments
-				// to handle any nested custom operators
+				// to handle any nested custom operators.
+				// Array operators are handled specially: parse them immediately with
+				// their full operatorPath so nested custom-operator failures preserve
+				// complete JSONPath context under non-array parents (e.g. == / and).
+				// ArrayOperator still performs scope-aware rewrites before nested
+				// custom operators are parsed.
+				if p.isArrayOperator(operator) {
+					sql, err := p.parseOperator(operator, opArgs, operatorPath)
+					if err != nil {
+						return nil, err
+					}
+					return operators.SQLResult(sql), nil
+				}
 				processedOpArgs, err := p.processOpArgs(opArgs, operatorPath)
 				if err != nil {
 					return nil, err
@@ -408,6 +431,13 @@ func (p *Parser) processCustomOperatorArgs(args interface{}, path string) ([]int
 // processArgToSQL converts a single argument to its SQL representation.
 // path is the JSONPath to this argument.
 func (p *Parser) processArgToSQL(arg interface{}, path string) (interface{}, error) {
+	if pv, ok := arg.(operators.ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return p.primitiveToSQL(pv.Value), nil
+	}
+
 	// Handle complex expressions (maps)
 	if exprMap, ok := arg.(map[string]interface{}); ok {
 		if len(exprMap) == 1 {
@@ -613,9 +643,9 @@ func (p *Parser) parseOperatorParam(operator string, args interface{}, path stri
 		}
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
 
-	case "map", "filter", "reduce", "all", "some", "none", "merge":
+	case operators.OpMap, operators.OpFilter, operators.OpReduce, operators.OpAll, operators.OpSome, operators.OpNone, operators.OpMerge:
 		if arr, ok := args.([]interface{}); ok {
-			sql, err := p.arrayOp.ToSQLParam(operator, arr, pc)
+			sql, err := p.arrayOp.ToSQLParamAtPath(operator, arr, pc, path)
 			return sql, p.wrapOperatorError(operator, path, err)
 		}
 		return "", tperrors.NewOperatorRequiresArray(operator, path)
@@ -660,6 +690,13 @@ func (p *Parser) processArgParam(arg interface{}, path string, index int, pc *pa
 					return operators.SQLResult(sql), nil
 				}
 
+				if p.isArrayOperator(operator) {
+					sql, err := p.parseOperatorParam(operator, opArgs, operatorPath, pc)
+					if err != nil {
+						return nil, err
+					}
+					return operators.SQLResult(sql), nil
+				}
 				processedOpArgs, err := p.processOpArgsParam(opArgs, operatorPath, pc)
 				if err != nil {
 					return nil, err
@@ -710,6 +747,13 @@ func (p *Parser) processCustomOperatorArgsParam(args interface{}, path string, p
 
 // processArgToSQLParam is the parameterized variant of processArgToSQL. Keep in sync.
 func (p *Parser) processArgToSQLParam(arg interface{}, path string, pc *params.ParamCollector) (interface{}, error) {
+	if pv, ok := arg.(operators.ProcessedValue); ok {
+		if pv.IsSQL {
+			return pv.Value, nil
+		}
+		return p.primitiveToSQLParam(pv.Value, pc), nil
+	}
+
 	if exprMap, ok := arg.(map[string]interface{}); ok {
 		if len(exprMap) == 1 {
 			for operator, opArgs := range exprMap {
