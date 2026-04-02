@@ -134,6 +134,21 @@ sql, _ = transpiler.Transpile(`{"in": ["hello", {"var": "name"}]}`)
 fmt.Println(sql) // Output: WHERE STRPOS(name, 'hello') > 0
 ```
 
+### In Operator Behavior Without Schema
+
+When no schema is provided, `in` uses heuristics to infer whether to generate:
+
+- string containment (`STRPOS` / `POSITION` / `position`)
+- array membership (`IN UNNEST` / `= ANY` / `list_contains` / `has`)
+
+Current heuristics treat obvious string-producing left operands as containment, including:
+
+- string literals
+- string SQL literals
+- string expressions rooted at `cat` or `substr`
+
+For deterministic behavior across all expression shapes (especially custom operators), use schema-aware mode.
+
 ### Type Coercion
 
 When a schema is provided, the transpiler automatically coerces literal values to match the field's type. This prevents type errors in strict-typing databases like BigQuery and Spanner.

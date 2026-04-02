@@ -85,6 +85,9 @@ The project includes comprehensive tests:
 - **3,000+ test cases** across all packages
 - **168 REPL test cases** for integration testing
 - Full coverage for all operators and dialects
+- Cross-dialect regression matrices for nested built-in/custom flows:
+  - `comparison_logical_numeric_matrix_test.go`
+  - `data_access_matrix_test.go`
 
 ### Running Tests
 
