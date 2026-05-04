@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Dialect represents a SQL dialect that the transpiler can target.
@@ -74,7 +75,7 @@ func NeedsQuoting(segment string) bool {
 	if segment == "" {
 		return false
 	}
-	first := rune(segment[0])
+	first, _ := utf8.DecodeRuneInString(segment)
 	if unicode.IsDigit(first) {
 		return true
 	}

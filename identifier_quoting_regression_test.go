@@ -245,6 +245,63 @@ func TestIdentifierQuotingRegression_NormalAndDeep_AllDialects(t *testing.T) {
 	}
 }
 
+func TestIdentifierQuotingRegression_NonASCIIDigitLeadingSchemaSegment(t *testing.T) {
+	t.Parallel()
+
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "metrics.\uff124h.count", Type: FieldTypeInteger},
+	})
+	logic := `{">=": [{"var": "metrics.\uff124h.count"}, 10]}`
+
+	tests := []struct {
+		dialect Dialect
+		inline  string
+		param   string
+	}{
+		{
+			dialect: DialectBigQuery,
+			inline:  "WHERE metrics.`\uff124h`.count >= 10",
+			param:   "WHERE metrics.`\uff124h`.count >= @p1",
+		},
+		{
+			dialect: DialectSpanner,
+			inline:  "WHERE metrics.`\uff124h`.count >= 10",
+			param:   "WHERE metrics.`\uff124h`.count >= @p1",
+		},
+		{
+			dialect: DialectPostgreSQL,
+			inline:  "WHERE metrics.\"\uff124h\".count >= 10",
+			param:   "WHERE metrics.\"\uff124h\".count >= $1",
+		},
+		{
+			dialect: DialectDuckDB,
+			inline:  "WHERE metrics.\"\uff124h\".count >= 10",
+			param:   "WHERE metrics.\"\uff124h\".count >= $1",
+		},
+		{
+			dialect: DialectClickHouse,
+			inline:  "WHERE metrics.`\uff124h`.count >= 10",
+			param:   "WHERE metrics.`\uff124h`.count >= @p1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dialect.String(), func(t *testing.T) {
+			t.Parallel()
+
+			tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect: tt.dialect,
+				Schema:  schema,
+			})
+			if err != nil {
+				t.Fatalf("NewTranspilerWithConfig() error: %v", err)
+			}
+
+			assertIdentifierQuotingSQL(t, tr, tt.dialect, logic, tt.inline, tt.param, []QueryParam{{Name: "p1", Value: float64(10)}})
+		})
+	}
+}
+
 func registerIdentifierQuotingCustomOperators(t *testing.T, tr *Transpiler) {
 	t.Helper()
 

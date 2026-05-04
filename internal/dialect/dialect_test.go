@@ -92,6 +92,7 @@ func TestNeedsQuoting(t *testing.T) {
 		{"7d", true},
 		{"10m", true},
 		{"120d", true},
+		{"\uff124h", true},
 		{"col-name", true},
 		{"has space", true},
 		{"", false},
