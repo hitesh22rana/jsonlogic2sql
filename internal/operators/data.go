@@ -44,6 +44,19 @@ func (d *DataOperator) schema() SchemaProvider {
 	return d.config.Schema
 }
 
+func (d *DataOperator) columnNameForVar(varName string) (string, error) {
+	columnName, err := d.convertVarName(varName)
+	if err != nil {
+		return "", err
+	}
+	if d.schema() != nil {
+		if err := d.schema().ValidateField(varName); err != nil {
+			return "", err
+		}
+	}
+	return columnName, nil
+}
+
 // ToSQL converts a data operator to SQL.
 func (d *DataOperator) ToSQL(operator string, args []interface{}) (string, error) {
 	switch operator {
@@ -73,13 +86,7 @@ func (d *DataOperator) handleVar(args []interface{}) (string, error) {
 			return ElemVar, nil
 		}
 
-		// Validate field against schema if schema is provided
-		if d.schema() != nil {
-			if err := d.schema().ValidateField(varName); err != nil {
-				return "", err
-			}
-		}
-		columnName, err := d.convertVarName(varName)
+		columnName, err := d.columnNameForVar(varName)
 		if err != nil {
 			return "", err
 		}
@@ -97,13 +104,7 @@ func (d *DataOperator) handleVar(args []interface{}) (string, error) {
 
 		// Check if first element is a string (variable name)
 		if varName, ok := arr[0].(string); ok {
-			// Validate field against schema if schema is provided
-			if d.schema() != nil {
-				if err := d.schema().ValidateField(varName); err != nil {
-					return "", err
-				}
-			}
-			columnName, err := d.convertVarName(varName)
+			columnName, err := d.columnNameForVar(varName)
 			if err != nil {
 				return "", err
 			}
@@ -137,13 +138,7 @@ func (d *DataOperator) handleMissing(args []interface{}) (string, error) {
 
 	// Handle single string argument
 	if varName, ok := args[0].(string); ok {
-		// Validate field against schema if schema is provided
-		if d.schema() != nil {
-			if err := d.schema().ValidateField(varName); err != nil {
-				return "", err
-			}
-		}
-		columnName, err := d.convertVarName(varName)
+		columnName, err := d.columnNameForVar(varName)
 		if err != nil {
 			return "", err
 		}
@@ -162,13 +157,7 @@ func (d *DataOperator) handleMissing(args []interface{}) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("all variable names in missing must be strings")
 			}
-			// Validate field against schema if schema is provided
-			if d.schema() != nil {
-				if err := d.schema().ValidateField(name); err != nil {
-					return "", err
-				}
-			}
-			columnName, err := d.convertVarName(name)
+			columnName, err := d.columnNameForVar(name)
 			if err != nil {
 				return "", err
 			}
@@ -212,13 +201,7 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("all variable names in missing_some must be strings")
 			}
-			// Validate field against schema if schema is provided
-			if d.schema() != nil {
-				if err := d.schema().ValidateField(name); err != nil {
-					return "", err
-				}
-			}
-			columnName, err := d.convertVarName(name)
+			columnName, err := d.columnNameForVar(name)
 			if err != nil {
 				return "", err
 			}
@@ -235,13 +218,7 @@ func (d *DataOperator) handleMissingSome(args []interface{}) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("all variable names in missing_some must be strings")
 		}
-		// Validate field against schema if schema is provided
-		if d.schema() != nil {
-			if err := d.schema().ValidateField(name); err != nil {
-				return "", err
-			}
-		}
-		columnName, err := d.convertVarName(name)
+		columnName, err := d.columnNameForVar(name)
 		if err != nil {
 			return "", err
 		}
@@ -383,12 +360,7 @@ func (d *DataOperator) handleVarParam(args []interface{}, pc *params.ParamCollec
 			return ElemVar, nil
 		}
 
-		if d.schema() != nil {
-			if err := d.schema().ValidateField(varName); err != nil {
-				return "", err
-			}
-		}
-		columnName, err := d.convertVarName(varName)
+		columnName, err := d.columnNameForVar(varName)
 		if err != nil {
 			return "", err
 		}
@@ -401,12 +373,7 @@ func (d *DataOperator) handleVarParam(args []interface{}, pc *params.ParamCollec
 		}
 
 		if varName, ok := arr[0].(string); ok {
-			if d.schema() != nil {
-				if err := d.schema().ValidateField(varName); err != nil {
-					return "", err
-				}
-			}
-			columnName, err := d.convertVarName(varName)
+			columnName, err := d.columnNameForVar(varName)
 			if err != nil {
 				return "", err
 			}
@@ -456,12 +423,7 @@ func (d *DataOperator) handleMissingSomeParam(args []interface{}, pc *params.Par
 			if !ok {
 				return "", fmt.Errorf("all variable names in missing_some must be strings")
 			}
-			if d.schema() != nil {
-				if err := d.schema().ValidateField(name); err != nil {
-					return "", err
-				}
-			}
-			columnName, err := d.convertVarName(name)
+			columnName, err := d.columnNameForVar(name)
 			if err != nil {
 				return "", err
 			}
@@ -476,12 +438,7 @@ func (d *DataOperator) handleMissingSomeParam(args []interface{}, pc *params.Par
 		if !ok {
 			return "", fmt.Errorf("all variable names in missing_some must be strings")
 		}
-		if d.schema() != nil {
-			if err := d.schema().ValidateField(name); err != nil {
-				return "", err
-			}
-		}
-		columnName, err := d.convertVarName(name)
+		columnName, err := d.columnNameForVar(name)
 		if err != nil {
 			return "", err
 		}

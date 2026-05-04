@@ -2,7 +2,9 @@ package operators
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/params"
@@ -325,6 +327,18 @@ func TestDataOperator_convertVarName_rejectsPreQuoted(t *testing.T) {
 	}
 }
 
+func TestDataOperator_ToSQL_rejectsPreQuotedBeforeSchemaValidation(t *testing.T) {
+	op := NewDataOperator(NewOperatorConfig(0, &rejectingDataSchemaProvider{}))
+
+	_, err := op.ToSQL("var", []interface{}{"data.`24h`.tx"})
+	if err == nil {
+		t.Fatal("ToSQL() expected error for pre-quoted input, got nil")
+	}
+	if !strings.Contains(err.Error(), "contains quote characters") {
+		t.Fatalf("ToSQL() error = %q, want quote-character validation", err.Error())
+	}
+}
+
 // dataSchemaProvider is a minimal schema provider for data operator tests.
 type dataSchemaProvider struct{}
 
@@ -338,6 +352,14 @@ func (m *dataSchemaProvider) IsBooleanType(_ string) bool         { return false
 func (m *dataSchemaProvider) IsEnumType(_ string) bool            { return false }
 func (m *dataSchemaProvider) GetAllowedValues(_ string) []string  { return nil }
 func (m *dataSchemaProvider) ValidateEnumValue(_, _ string) error { return nil }
+
+type rejectingDataSchemaProvider struct {
+	dataSchemaProvider
+}
+
+func (m *rejectingDataSchemaProvider) ValidateField(_ string) error {
+	return errors.New("schema validation called before quote validation")
+}
 
 func TestDataOperator_valueToSQL(t *testing.T) {
 	op := NewDataOperator(nil)
