@@ -8,7 +8,7 @@ import (
 )
 
 func matrixSchema() *Schema {
-	return NewSchema([]FieldSchema{
+	return mustNewSchema([]FieldSchema{
 		{Name: "bag.records", Type: FieldTypeArray},
 		{Name: "bag.numbers", Type: FieldTypeArray},
 		{Name: "bag.words", Type: FieldTypeArray},

@@ -1724,7 +1724,7 @@ func TestTranspiler_SetSchema_NilRestoresIdentifierValidation(t *testing.T) {
 	}
 
 	// With schema set, unusual names are allowed and validated by schema.
-	tr.SetSchema(NewSchema([]FieldSchema{
+	tr.SetSchema(mustNewSchema([]FieldSchema{
 		{Name: "bad field", Type: FieldTypeNumber},
 	}))
 
@@ -2080,7 +2080,7 @@ func TestPackageLevel_TranspileConditionFromInterface(t *testing.T) {
 }
 
 func TestNestedComparisonSchemaCoercion(t *testing.T) {
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "status", Type: FieldTypeString},
 		{Name: "amount", Type: FieldTypeInteger},
 	})

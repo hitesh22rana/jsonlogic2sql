@@ -94,7 +94,7 @@ func BenchmarkDeeplyNested(b *testing.B) {
 
 // BenchmarkWithSchema benchmarks transpilation with schema validation enabled.
 func BenchmarkWithSchema(b *testing.B) {
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "age", Type: FieldTypeInteger},
 		{Name: "name", Type: FieldTypeString},
 		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "inactive", "banned"}},

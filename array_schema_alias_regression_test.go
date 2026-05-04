@@ -6,7 +6,7 @@ import (
 )
 
 func testArrayScopeSchema() *Schema {
-	return NewSchema([]FieldSchema{
+	return mustNewSchema([]FieldSchema{
 		{Name: "numbers", Type: FieldTypeArray},
 		{Name: "scores", Type: FieldTypeArray},
 		{Name: "groups", Type: FieldTypeArray},

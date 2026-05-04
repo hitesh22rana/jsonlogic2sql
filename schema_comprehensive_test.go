@@ -1099,7 +1099,7 @@ func TestEnumWithComplexExpressions(t *testing.T) {
 // to match the field type. Numbers are quoted for string fields, and string numbers are
 // unquoted for numeric fields. This prevents type errors in strict-typing databases like BigQuery.
 func TestTypeCoercionForInOperator(t *testing.T) {
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "code", Type: FieldTypeString},
 		{Name: "status", Type: FieldTypeString},
 		{Name: "bio", Type: FieldTypeString},

@@ -85,7 +85,7 @@ func assertAllAPIsErrorForAccumulatorOutsideReduce(t *testing.T, tr *Transpiler,
 func TestAccumulatorOutsideReduceRejectedWithSchema_AllDialects(t *testing.T) {
 	t.Parallel()
 
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "bag.numbers", Type: FieldTypeArray},
 	})
 

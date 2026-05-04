@@ -335,7 +335,7 @@ func TestTranspileParameterized_AllDialects(t *testing.T) {
 }
 
 func TestTranspileParameterized_SchemaCoercion(t *testing.T) {
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "price", Type: FieldTypeInteger},
 		{Name: "name", Type: FieldTypeString},
 	})
@@ -874,7 +874,7 @@ func TestTranspileParameterized_InStringExpressionContainment_NoSchema(t *testin
 }
 
 func TestTranspileParameterized_InSchemaCoercion(t *testing.T) {
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "name", Type: FieldTypeString},
 		{Name: "tags", Type: FieldTypeArray},
 	})
