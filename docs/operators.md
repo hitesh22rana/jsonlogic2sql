@@ -37,6 +37,8 @@ WHERE data[1]
 WHERE COALESCE(status, 'pending')
 ```
 
+> **Note:** Path segments that start with a digit (e.g. `24h`, `7d`) are automatically quoted using the dialect-appropriate character. See [Identifier Quoting](dialects.md#identifier-quoting) for details.
+
 ### Missing Field Check (Single)
 
 ```json

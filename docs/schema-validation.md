@@ -39,6 +39,20 @@ func main() {
 }
 ```
 
+**Note:** Field names must be raw, unquoted identifiers. The transpiler handles identifier quoting automatically based on the target dialect. `NewSchema` remains source-compatible with the v1 API and reports invalid schema field names when the schema is used by the transpiler. Use `NewValidatedSchema`, `ValidateSchemaFields`, `NewSchemaFromJSON`, or `NewSchemaFromFile` when you need construction-time errors for schema field names that contain quote characters (backtick, double quote, or single quote).
+
+## Validated Schema Construction
+
+```go
+schema, err := jsonlogic2sql.NewValidatedSchema([]jsonlogic2sql.FieldSchema{
+    {Name: "order.amount", Type: jsonlogic2sql.FieldTypeInteger},
+    {Name: "order.status", Type: jsonlogic2sql.FieldTypeString},
+})
+if err != nil {
+    panic(err)
+}
+```
+
 ## Loading Schema from JSON
 
 ```go
@@ -156,11 +170,11 @@ When a schema is provided, the transpiler automatically coerces literal values t
 **Number to String** - When a string field is compared with numeric literals, the numbers are coerced to quoted strings:
 
 ```go
-// Schema: merchant_sector_code is string type
-sql, _ := transpiler.Transpile(`{"in": [{"var": "merchant_sector_code"}, [5960, 9000]]}`)
+// Schema: category_code is string type
+sql, _ := transpiler.Transpile(`{"in": [{"var": "category_code"}, [5960, 9000]]}`)
 fmt.Println(sql)
-// Output: WHERE merchant_sector_code IN ('5960', '9000')
-// Without schema: WHERE merchant_sector_code IN (5960, 9000) - would fail in BigQuery
+// Output: WHERE category_code IN ('5960', '9000')
+// Without schema: WHERE category_code IN (5960, 9000) - would fail in BigQuery
 ```
 
 **String to Number** - When a numeric field is compared with string literals that are valid numbers, the strings are coerced to unquoted numbers:
@@ -241,9 +255,11 @@ _, err = transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 
 ```go
 // Schema creation
-schema := jsonlogic2sql.NewSchema(fields []FieldSchema)
-schema, err := jsonlogic2sql.NewSchemaFromJSON(data []byte)
-schema, err := jsonlogic2sql.NewSchemaFromFile(filepath string)
+schema := jsonlogic2sql.NewSchema(fields)
+err := jsonlogic2sql.ValidateSchemaFields(fields)
+schema, err := jsonlogic2sql.NewValidatedSchema(fields)
+schema, err := jsonlogic2sql.NewSchemaFromJSON(data)
+schema, err := jsonlogic2sql.NewSchemaFromFile(filepath)
 
 // Schema methods
 schema.HasField(fieldName string) bool              // Check if field exists

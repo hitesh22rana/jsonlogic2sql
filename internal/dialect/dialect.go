@@ -1,7 +1,12 @@
 // Package dialect provides SQL dialect definitions for the transpiler.
 package dialect
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // Dialect represents a SQL dialect that the transpiler can target.
 type Dialect int
@@ -61,4 +66,46 @@ func (d Dialect) Validate() error {
 		return fmt.Errorf("unsupported dialect: %s", d.String())
 	}
 	return nil
+}
+
+// NeedsQuoting returns true if an identifier segment requires quoting.
+// A segment needs quoting if it starts with a digit or contains characters
+// other than letters, digits, and underscores.
+func NeedsQuoting(segment string) bool {
+	if segment == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(segment)
+	if unicode.IsDigit(first) {
+		return true
+	}
+	for _, r := range segment {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return true
+		}
+	}
+	return false
+}
+
+// ContainsQuoteCharacters returns true if the segment contains backticks, double
+// quotes, or single quotes. These characters are used for identifier quoting and
+// must not appear in raw variable names — the transpiler handles quoting automatically.
+func ContainsQuoteCharacters(segment string) bool {
+	return strings.ContainsAny(segment, "`\"'")
+}
+
+// QuoteIdentifierSegment wraps a single identifier segment with dialect-appropriate
+// quote characters. It also escapes any embedded quote characters within the segment.
+//   - BigQuery / Spanner / ClickHouse: backtick (`)
+//   - PostgreSQL / DuckDB: double quote (")
+func QuoteIdentifierSegment(segment string, d Dialect) string {
+	//nolint:exhaustive // default uses backtick (safe for GoogleSQL family)
+	switch d {
+	case DialectPostgreSQL, DialectDuckDB:
+		escaped := strings.ReplaceAll(segment, `"`, `""`)
+		return `"` + escaped + `"`
+	default:
+		escaped := strings.ReplaceAll(segment, "`", "``")
+		return "`" + escaped + "`"
+	}
 }

@@ -16,6 +16,7 @@ func TestNewParser(t *testing.T) {
 	p := NewParser(nil)
 	if p == nil {
 		t.Fatal("NewParser(nil) returned nil")
+		return
 	}
 	if p.validator == nil {
 		t.Fatal("validator is nil")
@@ -1750,6 +1751,7 @@ func TestNewParser_WithExplicitConfig(t *testing.T) {
 	p := NewParser(config)
 	if p == nil {
 		t.Fatal("NewParser() with config returned nil")
+		return
 	}
 	if p.config.GetDialect() != dialect.DialectPostgreSQL {
 		t.Errorf("dialect = %v, expected PostgreSQL", p.config.GetDialect())

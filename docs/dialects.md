@@ -35,6 +35,20 @@ All JSON Logic operators are supported across all dialects. The library generate
 | **Array** | `in`, `map`, `filter`, `reduce`, `all`, `some`, `none`, `merge` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **String** | `in`, `cat`, `substr` | ✓ | ✓ | ✓ | ✓ | ✓ |
 
+## Identifier Quoting
+
+Path segments that are not valid unquoted SQL identifiers (e.g. start with a digit) are automatically quoted using the dialect-appropriate character:
+
+| Dialect | Quote Character | Example |
+|---------|----------------|---------|
+| BigQuery | Backtick (`` ` ``) | `` fixture.history.`24h`.events.total `` |
+| Spanner | Backtick (`` ` ``) | `` fixture.history.`24h`.events.total `` |
+| PostgreSQL | Double quote (`"`) | `fixture.history."24h".events.total` |
+| DuckDB | Double quote (`"`) | `fixture.history."24h".events.total` |
+| ClickHouse | Backtick (`` ` ``) | `` fixture.history.`24h`.events.total `` |
+
+Segments that only contain letters, digits, and underscores (and don't start with a digit) remain unquoted. The same per-segment quoting is applied inside array scopes such as `current.24h`/`item.24h` and before variable references are passed to custom operators.
+
 ## Dialect-Specific SQL Generation
 
 Some operators generate different SQL based on the target dialect:

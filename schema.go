@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/h22rana/jsonlogic2sql/internal/dialect"
 )
 
 // FieldType represents the type of a field in the schema.
@@ -30,11 +33,21 @@ type FieldSchema struct {
 
 // Schema represents the collection of field schemas.
 type Schema struct {
-	fields map[string]FieldSchema // Map field name to schema for O(1) lookup
+	fields        map[string]FieldSchema // Map field name to schema for O(1) lookup
+	validationErr error
 }
 
 // NewSchema creates a new schema from a slice of field schemas.
+//
+// This constructor is kept source-compatible with the v1 API. For callers that
+// need immediate validation errors, use NewValidatedSchema or ValidateSchemaFields.
 func NewSchema(fields []FieldSchema) *Schema {
+	s := newSchemaUnchecked(fields)
+	s.validationErr = ValidateSchemaFields(fields)
+	return s
+}
+
+func newSchemaUnchecked(fields []FieldSchema) *Schema {
 	s := &Schema{
 		fields: make(map[string]FieldSchema),
 	}
@@ -44,13 +57,38 @@ func NewSchema(fields []FieldSchema) *Schema {
 	return s
 }
 
+// ValidateSchemaFields validates schema field definitions.
+// Field names must be raw, unquoted identifiers; the transpiler applies SQL
+// identifier quoting automatically based on the target dialect.
+func ValidateSchemaFields(fields []FieldSchema) error {
+	for _, field := range fields {
+		for _, seg := range strings.Split(field.Name, ".") {
+			if dialect.ContainsQuoteCharacters(seg) {
+				return fmt.Errorf(
+					"schema field %q contains quote characters; "+
+						"use raw identifiers; the transpiler handles quoting automatically", field.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// NewValidatedSchema creates a schema and returns an error for invalid schema
+// field names. Use this when the caller needs construction-time validation.
+func NewValidatedSchema(fields []FieldSchema) (*Schema, error) {
+	if err := ValidateSchemaFields(fields); err != nil {
+		return nil, err
+	}
+	return newSchemaUnchecked(fields), nil
+}
+
 // NewSchemaFromJSON creates a new schema from a JSON byte slice.
 func NewSchemaFromJSON(data []byte) (*Schema, error) {
 	var fields []FieldSchema
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, fmt.Errorf("invalid schema JSON: %w", err)
 	}
-	return NewSchema(fields), nil
+	return NewValidatedSchema(fields)
 }
 
 // NewSchemaFromFile loads a schema from a JSON file.
@@ -75,6 +113,9 @@ func (s *Schema) HasField(fieldName string) bool {
 func (s *Schema) ValidateField(fieldName string) error {
 	if s == nil {
 		return nil // No schema means no validation
+	}
+	if s.validationErr != nil {
+		return s.validationErr
 	}
 	if !s.HasField(fieldName) {
 		return fmt.Errorf("field '%s' is not defined in schema", fieldName)

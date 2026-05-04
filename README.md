@@ -9,6 +9,7 @@ A Go library that converts JSON Logic expressions into SQL. This library provide
 - **Parameterized Queries**: Generate SQL with bind placeholders (`@p1`, `$1`) and separate parameter values for safe execution
 - **Custom Operators**: Extensible registry pattern for custom SQL functions
 - **Schema Validation**: Optional field schema for strict column validation
+- **Identifier Quoting**: Path segments such as `24h` and `7d` are quoted per dialect
 - **Structured Errors**: Error codes and JSONPath locations for debugging
 - **Regression Matrices**: Cross-dialect schema-aware/schema-less matrix tests for nested built-in and custom operator flows
 - **Array Scope Safety**: Nested array operators keep inner/outer element aliases distinct where required
@@ -106,6 +107,8 @@ func main() {
 > **Semantic Correctness Assumption:** This library assumes that the input JSONLogic is semantically correct. The transpiler generates SQL that directly corresponds to the JSONLogic structure without validating the logical correctness of the expressions.
 
 > **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. For maximum safety, use the [parameterized query API](docs/parameterized-queries.md) which generates SQL with bind placeholders instead of inlined literals.
+
+> **Identifier Quoting:** JSON Logic `var` names and schema field names should use raw, unquoted identifiers. The transpiler quotes invalid unquoted path segments automatically, for example `fixture.history.24h.events.total` becomes ``fixture.history.`24h`.events.total`` for BigQuery/Spanner/ClickHouse and `fixture.history."24h".events.total` for PostgreSQL/DuckDB. `NewSchema` remains v1 source-compatible; use `NewValidatedSchema` or `ValidateSchemaFields` when you want construction-time schema validation.
 
 > **`in` Operator Inference:** Without a schema, `in` uses heuristics to infer string containment vs array membership. For deterministic behavior (especially with complex expressions), prefer schema-aware mode.
 

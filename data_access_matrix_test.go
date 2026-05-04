@@ -11,7 +11,7 @@ import (
 func TestRegressionMatrix_DataAccess_AllDialects(t *testing.T) {
 	t.Parallel()
 
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "profile.name", Type: FieldTypeString},
 		{Name: "profile.nick", Type: FieldTypeString},
 		{Name: "profile.email", Type: FieldTypeString},

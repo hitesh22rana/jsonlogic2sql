@@ -197,6 +197,8 @@ func TestArrayOperator_CustomOpLiteralSQL(t *testing.T) {
 					return "(current + 1)", nil
 				case "emit_current_dot":
 					return "current.price", nil
+				case "emit_current_numeric_dot":
+					return "current.24h", nil
 				}
 			}
 		}
@@ -231,6 +233,13 @@ func TestArrayOperator_CustomOpLiteralSQL(t *testing.T) {
 			args:     []any{map[string]any{"var": "items"}, map[string]any{">": []any{map[string]any{"emit_current_dot": []any{}}, 0}}},
 			contains: "elem.price",
 			absent:   "current.price",
+		},
+		{
+			name:     "literal current numeric-leading path replaced and quoted in some",
+			operator: "some",
+			args:     []any{map[string]any{"var": "items"}, map[string]any{">": []any{map[string]any{"emit_current_numeric_dot": []any{}}, 0}}},
+			contains: "elem.`24h`",
+			absent:   "current.24h",
 		},
 	}
 

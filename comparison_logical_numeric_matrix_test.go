@@ -11,7 +11,7 @@ import (
 func TestRegressionMatrix_ComparisonLogicalNumeric_AllDialects(t *testing.T) {
 	t.Parallel()
 
-	schema := NewSchema([]FieldSchema{
+	schema := mustNewSchema([]FieldSchema{
 		{Name: "profile.name", Type: FieldTypeString},
 		{Name: "profile.age", Type: FieldTypeNumber},
 		{Name: "profile.score", Type: FieldTypeNumber},
