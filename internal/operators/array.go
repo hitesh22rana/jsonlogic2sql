@@ -24,10 +24,8 @@ import (
 //   - "current.field" → "elem.field" (dot AFTER is fine, matched by \b)
 //   - "(current + 1)" → "(elem + 1)" (paren is non-word non-dot)
 var (
-	itemPattern        = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(ItemVar) + `\b`)
-	currentPattern     = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(CurrentVar) + `\b`)
-	accumulatorPattern = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
-	safeIdentifierExpr = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
+	elementRefPathPattern = regexp.MustCompile(`(^|[^\w.])((?:` + regexp.QuoteMeta(ItemVar) + `|` + regexp.QuoteMeta(CurrentVar) + `)(?:\.[A-Za-z0-9_]+)*)\b`)
+	accumulatorPattern    = regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(AccumulatorVar) + `\b`)
 )
 
 // ArrayOperator handles array operations like map, filter, reduce, all, some, none, merge.
@@ -595,9 +593,9 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 	// Check for common reduction patterns and optimize
 	if pattern := a.detectAggregatePattern(reducerExpr); pattern != nil {
 		// Build the element reference: "elem" or "elem.field" if field suffix exists
-		elemRef := alias
-		if pattern.fieldSuffix != "" {
-			elemRef = alias + "." + pattern.fieldSuffix
+		elemRef, quoteErr := a.quoteArrayScopePath(alias, pattern.fieldSuffix)
+		if quoteErr != nil {
+			return "", quoteErr
 		}
 
 		// Generate optimized aggregate SQL based on dialect
@@ -605,9 +603,13 @@ func (a *ArrayOperator) handleReduce(args []interface{}) (string, error) {
 		case dialect.DialectClickHouse:
 			// ClickHouse: For field access, we need arrayMap first to extract the field
 			if pattern.fieldSuffix != "" {
+				mappedRef, quoteErr := a.quoteArrayScopePath("x", pattern.fieldSuffix)
+				if quoteErr != nil {
+					return "", quoteErr
+				}
 				// initial + coalesce(arrayReduce('sum', arrayMap(x -> x.field, array)), 0)
-				return fmt.Sprintf("%s + coalesce(arrayReduce('%s', arrayMap(x -> x.%s, %s)), 0)",
-					initial, strings.ToLower(pattern.function), pattern.fieldSuffix, array), nil
+				return fmt.Sprintf("%s + coalesce(arrayReduce('%s', arrayMap(x -> %s, %s)), 0)",
+					initial, strings.ToLower(pattern.function), mappedRef, array), nil
 			}
 			// initial + coalesce(arrayReduce('sum', array), 0)
 			return fmt.Sprintf("%s + coalesce(arrayReduce('%s', %s), 0)",
@@ -1096,10 +1098,20 @@ func (a *ArrayOperator) expressionToSQLWithContextAndPath(expr interface{}, allo
 // operators or nested operator chains that may emit literal "item"/"current" tokens
 // not reachable by the AST-level rewrite.
 func (a *ArrayOperator) replaceElementRefsInSQL(sql string) string {
-	alias := a.elemAlias()
-	sql = replaceWithLiteral(itemPattern, sql, alias)
-	sql = replaceWithLiteral(currentPattern, sql, alias)
-	return sql
+	return elementRefPathPattern.ReplaceAllStringFunc(sql, func(match string) string {
+		loc := elementRefPathPattern.FindStringSubmatchIndex(match)
+		if loc == nil {
+			return match
+		}
+		prefix := match[loc[2]:loc[3]]
+		ref := match[loc[4]:loc[5]]
+		mapped := a.mapElementVarName(ref)
+		quoted, err := a.quoteArrayScopeIdentifier(mapped)
+		if err != nil {
+			return prefix + mapped
+		}
+		return prefix + quoted
+	})
 }
 
 // replaceWithLiteral replaces regex matches while preserving the captured prefix
@@ -1139,11 +1151,28 @@ func (a *ArrayOperator) mapElementVarName(varStr string) string {
 	return varStr
 }
 
-func (a *ArrayOperator) validateArrayScopeIdentifier(name string) error {
-	if !safeIdentifierExpr.MatchString(name) {
-		return fmt.Errorf("invalid identifier %q: must match [a-zA-Z_][a-zA-Z0-9_.]*", name)
+func (a *ArrayOperator) quoteArrayScopePath(alias, suffix string) (string, error) {
+	if suffix == "" {
+		return alias, nil
 	}
-	return nil
+	return a.quoteArrayScopeIdentifier(alias + "." + suffix)
+}
+
+func (a *ArrayOperator) quoteArrayScopeIdentifier(name string) (string, error) {
+	segments := strings.Split(name, ".")
+	for i, seg := range segments {
+		if dialect.ContainsQuoteCharacters(seg) {
+			return "", fmt.Errorf("array-scope variable name %q contains quote characters; "+
+				"use raw identifiers — the transpiler handles quoting automatically", name)
+		}
+		if seg == "" || !validIdentifierSegment.MatchString(seg) {
+			return "", fmt.Errorf("invalid identifier %q: each segment must match [a-zA-Z0-9_]+", name)
+		}
+		if i > 0 && dialect.NeedsQuoting(seg) {
+			segments[i] = dialect.QuoteIdentifierSegment(seg, a.getDialect())
+		}
+	}
+	return strings.Join(segments, "."), nil
 }
 
 // mapArrayScopeVar maps array-scope variable names to the current element alias.
@@ -1153,17 +1182,19 @@ func (a *ArrayOperator) mapArrayScopeVar(varName string) (string, bool, error) {
 		return a.elemAlias(), true, nil
 	}
 	if a.isVisibleElemPath(varName) {
-		if err := a.validateArrayScopeIdentifier(varName); err != nil {
+		quoted, err := a.quoteArrayScopeIdentifier(varName)
+		if err != nil {
 			return "", true, err
 		}
-		return varName, true, nil
+		return quoted, true, nil
 	}
 	mapped := a.mapElementVarName(varName)
 	if mapped != varName {
-		if err := a.validateArrayScopeIdentifier(mapped); err != nil {
+		quoted, err := a.quoteArrayScopeIdentifier(mapped)
+		if err != nil {
 			return "", true, err
 		}
-		return mapped, true, nil
+		return quoted, true, nil
 	}
 	return mapped, false, nil
 }
@@ -1222,10 +1253,11 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 			return a.elemAlias(), true, nil
 		}
 		if a.valueScope && a.isVisibleElemPath(varName) {
-			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			quoted, err := a.quoteArrayScopeIdentifier(varName)
+			if err != nil {
 				return "", true, err
 			}
-			return varName, true, nil
+			return quoted, true, nil
 		}
 		return "", false, nil
 	}
@@ -1246,10 +1278,11 @@ func (a *ArrayOperator) arrayInternalVarToSQL(varExpr interface{}) (string, bool
 			}
 			mapped = a.elemAlias()
 		case a.valueScope && a.isVisibleElemPath(varName):
-			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			quoted, err := a.quoteArrayScopeIdentifier(varName)
+			if err != nil {
 				return "", true, err
 			}
-			mapped = varName
+			mapped = quoted
 		default:
 			return "", false, nil
 		}
@@ -1383,9 +1416,7 @@ func (a *ArrayOperator) rewriteElementVars(expr interface{}) interface{} {
 	case ProcessedValue:
 		// Pre-processed SQL from custom operators - use word-boundary regex
 		if e.IsSQL {
-			alias := a.elemAlias()
-			replaced := replaceWithLiteral(itemPattern, e.Value, alias)
-			replaced = replaceWithLiteral(currentPattern, replaced, alias)
+			replaced := a.replaceElementRefsInSQL(e.Value)
 			if replaced != e.Value {
 				return ProcessedValue{Value: replaced, IsSQL: true}
 			}
@@ -1592,16 +1623,20 @@ func (a *ArrayOperator) handleReduceParam(args []interface{}, pc *params.ParamCo
 	alias := a.elemAlias()
 
 	if pattern := a.detectAggregatePattern(reducerExpr); pattern != nil {
-		elemRef := alias
-		if pattern.fieldSuffix != "" {
-			elemRef = alias + "." + pattern.fieldSuffix
+		elemRef, quoteErr := a.quoteArrayScopePath(alias, pattern.fieldSuffix)
+		if quoteErr != nil {
+			return "", quoteErr
 		}
 
 		switch a.getDialect() {
 		case dialect.DialectClickHouse:
 			if pattern.fieldSuffix != "" {
-				return fmt.Sprintf("%s + coalesce(arrayReduce('%s', arrayMap(x -> x.%s, %s)), 0)",
-					initial, strings.ToLower(pattern.function), pattern.fieldSuffix, array), nil
+				mappedRef, quoteErr := a.quoteArrayScopePath("x", pattern.fieldSuffix)
+				if quoteErr != nil {
+					return "", quoteErr
+				}
+				return fmt.Sprintf("%s + coalesce(arrayReduce('%s', arrayMap(x -> %s, %s)), 0)",
+					initial, strings.ToLower(pattern.function), mappedRef, array), nil
 			}
 			return fmt.Sprintf("%s + coalesce(arrayReduce('%s', %s), 0)",
 				initial, strings.ToLower(pattern.function), array), nil
@@ -1969,10 +2004,11 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 			return a.elemAlias(), true, nil
 		}
 		if a.valueScope && a.isVisibleElemPath(varName) {
-			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			quoted, err := a.quoteArrayScopeIdentifier(varName)
+			if err != nil {
 				return "", true, err
 			}
-			return varName, true, nil
+			return quoted, true, nil
 		}
 		return "", false, nil
 	}
@@ -1993,10 +2029,11 @@ func (a *ArrayOperator) arrayInternalVarToSQLParam(varExpr interface{}, pc *para
 			}
 			mapped = a.elemAlias()
 		case a.valueScope && a.isVisibleElemPath(varName):
-			if err := a.validateArrayScopeIdentifier(varName); err != nil {
+			quoted, err := a.quoteArrayScopeIdentifier(varName)
+			if err != nil {
 				return "", true, err
 			}
-			mapped = varName
+			mapped = quoted
 		default:
 			return "", false, nil
 		}
