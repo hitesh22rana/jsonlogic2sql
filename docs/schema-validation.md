@@ -14,7 +14,7 @@ import (
 
 func main() {
     // Create a schema with field definitions
-    schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+    schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
         {Name: "order.amount", Type: jsonlogic2sql.FieldTypeInteger},
         {Name: "order.status", Type: jsonlogic2sql.FieldTypeString},
         {Name: "user.verified", Type: jsonlogic2sql.FieldTypeBoolean},
@@ -39,7 +39,19 @@ func main() {
 }
 ```
 
-**Note:** Field names must be raw, unquoted identifiers. `NewSchema` returns an error if any field name contains quote characters (backtick, double quote, or single quote). The transpiler handles identifier quoting automatically based on the target dialect.
+**Note:** Field names must be raw, unquoted identifiers. The transpiler handles identifier quoting automatically based on the target dialect. `NewSchema` remains source-compatible with the v1 API and reports invalid schema field names when the schema is used by the transpiler. Use `NewValidatedSchema`, `ValidateSchemaFields`, `NewSchemaFromJSON`, or `NewSchemaFromFile` when you need construction-time errors for schema field names that contain quote characters (backtick, double quote, or single quote).
+
+## Validated Schema Construction
+
+```go
+schema, err := jsonlogic2sql.NewValidatedSchema([]jsonlogic2sql.FieldSchema{
+    {Name: "order.amount", Type: jsonlogic2sql.FieldTypeInteger},
+    {Name: "order.status", Type: jsonlogic2sql.FieldTypeString},
+})
+if err != nil {
+    panic(err)
+}
+```
 
 ## Loading Schema from JSON
 
@@ -92,7 +104,7 @@ When a schema is provided, operators perform strict type validation:
 ### Example
 
 ```go
-schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "amount", Type: jsonlogic2sql.FieldTypeInteger},
     {Name: "tags", Type: jsonlogic2sql.FieldTypeArray},
     {Name: "name", Type: jsonlogic2sql.FieldTypeString},
@@ -209,7 +221,7 @@ Enum fields allow you to define a fixed set of allowed values:
 
 ```go
 // Define schema with enum field
-schema, _ := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
     {Name: "status", Type: jsonlogic2sql.FieldTypeEnum, AllowedValues: []string{"active", "pending", "cancelled"}},
     {Name: "priority", Type: jsonlogic2sql.FieldTypeEnum, AllowedValues: []string{"low", "medium", "high"}},
 })
@@ -243,9 +255,11 @@ _, err = transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 
 ```go
 // Schema creation
-schema, err := jsonlogic2sql.NewSchema(fields []FieldSchema)
-schema, err := jsonlogic2sql.NewSchemaFromJSON(data []byte)
-schema, err := jsonlogic2sql.NewSchemaFromFile(filepath string)
+schema := jsonlogic2sql.NewSchema(fields)
+err := jsonlogic2sql.ValidateSchemaFields(fields)
+schema, err := jsonlogic2sql.NewValidatedSchema(fields)
+schema, err := jsonlogic2sql.NewSchemaFromJSON(data)
+schema, err := jsonlogic2sql.NewSchemaFromFile(filepath)
 
 // Schema methods
 schema.HasField(fieldName string) bool              // Check if field exists

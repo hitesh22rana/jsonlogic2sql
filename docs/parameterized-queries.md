@@ -140,7 +140,7 @@ type QueryParam struct {
 When a schema is configured, values are coerced **before** being bound as parameters. For example, if a field is declared as `integer` and the JSONLogic contains a string `"50000"`, the bound parameter value will be `int64(50000)`, not the string `"50000"`.
 
 ```go
-schema, err := jsonlogic2sql.NewSchema([]jsonlogic2sql.FieldSchema{
+schema, err := jsonlogic2sql.NewValidatedSchema([]jsonlogic2sql.FieldSchema{
     {Name: "amount", Type: jsonlogic2sql.FieldTypeInteger},
 })
 if err != nil {

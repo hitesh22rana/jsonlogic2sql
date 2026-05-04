@@ -108,7 +108,7 @@ func main() {
 
 > **SQL Injection:** This library includes hardening measures against SQL injection - identifier names are validated against a whitelist pattern, string literals are escaped, and numeric string operands are safely coerced. For maximum safety, use the [parameterized query API](docs/parameterized-queries.md) which generates SQL with bind placeholders instead of inlined literals.
 
-> **Identifier Quoting:** JSON Logic `var` names and schema field names should use raw, unquoted identifiers. The transpiler quotes invalid unquoted path segments automatically, for example `fixture.history.24h.events.total` becomes ``fixture.history.`24h`.events.total`` for BigQuery/Spanner/ClickHouse and `fixture.history."24h".events.total` for PostgreSQL/DuckDB.
+> **Identifier Quoting:** JSON Logic `var` names and schema field names should use raw, unquoted identifiers. The transpiler quotes invalid unquoted path segments automatically, for example `fixture.history.24h.events.total` becomes ``fixture.history.`24h`.events.total`` for BigQuery/Spanner/ClickHouse and `fixture.history."24h".events.total` for PostgreSQL/DuckDB. `NewSchema` remains v1 source-compatible; use `NewValidatedSchema` or `ValidateSchemaFields` when you want construction-time schema validation.
 
 > **`in` Operator Inference:** Without a schema, `in` uses heuristics to infer string containment vs array membership. For deterministic behavior (especially with complex expressions), prefer schema-aware mode.
 

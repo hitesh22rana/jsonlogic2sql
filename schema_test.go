@@ -3,12 +3,13 @@ package jsonlogic2sql
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestSchemaValidation(t *testing.T) {
 	// Create a schema with some fields
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "order.items.count", Type: FieldTypeInteger},
 		{Name: "order.total.amount", Type: FieldTypeInteger},
 		{Name: "user.name", Type: FieldTypeString},
@@ -77,7 +78,7 @@ func TestSchemaFromJSON(t *testing.T) {
 
 func TestSchemaWithTranspiler(t *testing.T) {
 	// Create schema
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "amount", Type: FieldTypeInteger},
 		{Name: "status", Type: FieldTypeString},
 	})
@@ -108,7 +109,7 @@ func TestSchemaWithTranspiler(t *testing.T) {
 
 func TestSchemaInOperator(t *testing.T) {
 	// Create schema with array and string fields
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "tags", Type: FieldTypeArray},
 		{Name: "description", Type: FieldTypeString},
 	})
@@ -222,7 +223,7 @@ func TestSchemaFromFile_NotFound(t *testing.T) {
 }
 
 func TestSchemaGetFields(t *testing.T) {
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "field1", Type: FieldTypeString},
 		{Name: "field2", Type: FieldTypeInteger},
 		{Name: "field3", Type: FieldTypeBoolean},
@@ -252,7 +253,7 @@ func TestSchemaGetFields(t *testing.T) {
 }
 
 func TestSchemaIsBooleanType(t *testing.T) {
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "is_active", Type: FieldTypeBoolean},
 		{Name: "name", Type: FieldTypeString},
 		{Name: "count", Type: FieldTypeInteger},
@@ -278,7 +279,7 @@ func TestSchemaIsBooleanType(t *testing.T) {
 }
 
 func TestSchemaGetAllowedValues(t *testing.T) {
-	schema, _ := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
 		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "pending", "closed"}},
 		{Name: "name", Type: FieldTypeString},
 	})
@@ -302,7 +303,7 @@ func TestSchemaGetAllowedValues(t *testing.T) {
 	}
 }
 
-func TestNewSchema_RejectsQuotedFieldNames(t *testing.T) {
+func TestValidatedSchemaConstructors_RejectQuotedFieldNames(t *testing.T) {
 	tests := []struct {
 		name   string
 		fields []FieldSchema
@@ -327,22 +328,64 @@ func TestNewSchema_RejectsQuotedFieldNames(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewSchema(tt.fields)
+			if err := ValidateSchemaFields(tt.fields); err == nil {
+				t.Errorf("ValidateSchemaFields() expected error for quoted field name %q, got nil", tt.fields[0].Name)
+			}
+			_, err := NewValidatedSchema(tt.fields)
 			if err == nil {
-				t.Errorf("NewSchema() expected error for quoted field name %q, got nil", tt.fields[0].Name)
+				t.Errorf("NewValidatedSchema() expected error for quoted field name %q, got nil", tt.fields[0].Name)
 			}
 		})
 	}
 }
 
 func TestNewSchema_AcceptsRawFieldNames(t *testing.T) {
-	schema, err := NewSchema([]FieldSchema{
+	schema := NewSchema([]FieldSchema{
+		{Name: "fixture.history.24h.events.total", Type: FieldTypeInteger},
+		{Name: "user.name", Type: FieldTypeString},
+		{Name: "tags", Type: FieldTypeArray},
+	})
+	if !schema.HasField("fixture.history.24h.events.total") {
+		t.Error("schema should have field fixture.history.24h.events.total")
+	}
+}
+
+func TestNewSchema_InvalidFieldNamesFailWhenUsed(t *testing.T) {
+	schema := NewSchema([]FieldSchema{{Name: "fixture.`24h`.events.total", Type: FieldTypeInteger}})
+	if err := schema.ValidateField("fixture.`24h`.events.total"); err == nil {
+		t.Fatal("ValidateField() expected schema field validation error, got nil")
+	}
+}
+
+func TestNewSchema_InvalidFieldNamesFailDuringTranspile(t *testing.T) {
+	schema := NewSchema([]FieldSchema{{Name: "fixture.`24h`.events.total", Type: FieldTypeInteger}})
+	transpiler, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error: %v", err)
+	}
+	transpiler.SetSchema(schema)
+	if _, err := transpiler.Transpile(`{"==": [{"var": "fixture.24h.events.total"}, 1]}`); err == nil {
+		t.Fatal("Transpile() expected schema field validation error, got nil")
+	} else if !strings.Contains(err.Error(), "schema field") {
+		t.Fatalf("Transpile() expected schema field validation error, got %v", err)
+	}
+}
+
+func TestNewSchemaFromJSON_RejectsQuotedFieldNames(t *testing.T) {
+	_, err := NewSchemaFromJSON([]byte("[{\"name\":\"fixture.`24h`.events.total\",\"type\":\"integer\"}]"))
+	if err == nil {
+		t.Fatal("NewSchemaFromJSON() expected schema field validation error, got nil")
+	}
+}
+
+func TestNewValidatedSchema_AcceptsRawFieldNames(t *testing.T) {
+	schema, err := NewValidatedSchema([]FieldSchema{
 		{Name: "fixture.history.24h.events.total", Type: FieldTypeInteger},
 		{Name: "user.name", Type: FieldTypeString},
 		{Name: "tags", Type: FieldTypeArray},
 	})
 	if err != nil {
-		t.Fatalf("NewSchema() unexpected error for raw field names: %v", err)
+		t.Fatalf("NewValidatedSchema() unexpected error for raw field names: %v", err)
 	}
 	if !schema.HasField("fixture.history.24h.events.total") {
 		t.Error("schema should have field fixture.history.24h.events.total")

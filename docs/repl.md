@@ -110,6 +110,8 @@ Use `:schema` to load a schema file for field validation and type-aware SQL:
 Schema loaded: schema.json
 ```
 
+Schema field names should be raw, unquoted identifiers. The REPL uses the same dialect-aware identifier quoting as the library, including numeric-leading path segments in array scopes such as `current.24h`.
+
 ## Examples Command
 
 The `:examples` command shows common JSON Logic patterns:

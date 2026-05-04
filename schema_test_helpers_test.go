@@ -1,7 +1,7 @@
 package jsonlogic2sql
 
 func mustNewSchema(fields []FieldSchema) *Schema {
-	schema, err := NewSchema(fields)
+	schema, err := NewValidatedSchema(fields)
 	if err != nil {
 		panic(err)
 	}
