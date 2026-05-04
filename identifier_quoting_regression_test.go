@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -96,6 +97,47 @@ func TestIdentifierQuotingRegression_NormalAndDeep_AllDialects(t *testing.T) {
 				{Name: "p2", Value: float64(100)},
 			},
 		},
+		{
+			name:  "deeply nested numeric-leading segments inside custom operators",
+			logic: `{"and":[{"betweenInclusive":[{"var":"fixture.windowed_metrics.24h.events.total"},50000,100000]},{"isNonZero":[{"var":"fixture.windowed_metrics.7d.events.count"}]}]}`,
+			inlineSQL: map[Dialect]string{
+				DialectBigQuery:   "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN 50000 AND 100000) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+				DialectSpanner:    "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN 50000 AND 100000) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+				DialectPostgreSQL: `WHERE ((fixture.windowed_metrics."24h".events.total BETWEEN 50000 AND 100000) AND (fixture.windowed_metrics."7d".events.count != 0))`,
+				DialectDuckDB:     `WHERE ((fixture.windowed_metrics."24h".events.total BETWEEN 50000 AND 100000) AND (fixture.windowed_metrics."7d".events.count != 0))`,
+				DialectClickHouse: "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN 50000 AND 100000) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+			},
+			paramSQL: map[Dialect]string{
+				DialectBigQuery:   "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN @p1 AND @p2) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+				DialectSpanner:    "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN @p1 AND @p2) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+				DialectPostgreSQL: `WHERE ((fixture.windowed_metrics."24h".events.total BETWEEN $1 AND $2) AND (fixture.windowed_metrics."7d".events.count != 0))`,
+				DialectDuckDB:     `WHERE ((fixture.windowed_metrics."24h".events.total BETWEEN $1 AND $2) AND (fixture.windowed_metrics."7d".events.count != 0))`,
+				DialectClickHouse: "WHERE ((fixture.windowed_metrics.`24h`.events.total BETWEEN @p1 AND @p2) AND (fixture.windowed_metrics.`7d`.events.count != 0))",
+			},
+			expectedParam: []QueryParam{
+				{Name: "p1", Value: float64(50000)},
+				{Name: "p2", Value: float64(100000)},
+			},
+		},
+		{
+			name:  "deeply nested numeric-leading segment inside dialect-aware custom operator",
+			logic: `{"dialectMetricPresent":[{"var":"fixture.windowed_metrics.24h.events.total"}]}`,
+			inlineSQL: map[Dialect]string{
+				DialectBigQuery:   "WHERE IFNULL(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+				DialectSpanner:    "WHERE IFNULL(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+				DialectPostgreSQL: `WHERE COALESCE(fixture.windowed_metrics."24h".events.total, 0) > 0`,
+				DialectDuckDB:     `WHERE COALESCE(fixture.windowed_metrics."24h".events.total, 0) > 0`,
+				DialectClickHouse: "WHERE ifNull(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+			},
+			paramSQL: map[Dialect]string{
+				DialectBigQuery:   "WHERE IFNULL(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+				DialectSpanner:    "WHERE IFNULL(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+				DialectPostgreSQL: `WHERE COALESCE(fixture.windowed_metrics."24h".events.total, 0) > 0`,
+				DialectDuckDB:     `WHERE COALESCE(fixture.windowed_metrics."24h".events.total, 0) > 0`,
+				DialectClickHouse: "WHERE ifNull(fixture.windowed_metrics.`24h`.events.total, 0) > 0",
+			},
+			expectedParam: nil,
+		},
 	}
 
 	for _, mode := range modes {
@@ -113,6 +155,7 @@ func TestIdentifierQuotingRegression_NormalAndDeep_AllDialects(t *testing.T) {
 					if err != nil {
 						t.Fatalf("NewTranspilerWithConfig() error: %v", err)
 					}
+					registerIdentifierQuotingCustomOperators(t, tr)
 
 					for _, tc := range cases {
 						t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +165,44 @@ func TestIdentifierQuotingRegression_NormalAndDeep_AllDialects(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func registerIdentifierQuotingCustomOperators(t *testing.T, tr *Transpiler) {
+	t.Helper()
+
+	if err := tr.RegisterOperatorFunc("betweenInclusive", func(_ string, args []interface{}) (string, error) {
+		if len(args) != 3 {
+			return "", fmt.Errorf("betweenInclusive expects 3 args")
+		}
+		return fmt.Sprintf("(%v BETWEEN %v AND %v)", args[0], args[1], args[2]), nil
+	}); err != nil {
+		t.Fatalf("RegisterOperatorFunc(betweenInclusive) error: %v", err)
+	}
+
+	if err := tr.RegisterOperatorFunc("isNonZero", func(_ string, args []interface{}) (string, error) {
+		if len(args) != 1 {
+			return "", fmt.Errorf("isNonZero expects 1 arg")
+		}
+		return fmt.Sprintf("(%v != 0)", args[0]), nil
+	}); err != nil {
+		t.Fatalf("RegisterOperatorFunc(isNonZero) error: %v", err)
+	}
+
+	if err := tr.RegisterDialectAwareOperatorFunc("dialectMetricPresent", func(_ string, args []interface{}, d Dialect) (string, error) {
+		if len(args) != 1 {
+			return "", fmt.Errorf("dialectMetricPresent expects 1 arg")
+		}
+		switch d {
+		case DialectPostgreSQL, DialectDuckDB:
+			return fmt.Sprintf("COALESCE(%v, 0) > 0", args[0]), nil
+		case DialectClickHouse:
+			return fmt.Sprintf("ifNull(%v, 0) > 0", args[0]), nil
+		default:
+			return fmt.Sprintf("IFNULL(%v, 0) > 0", args[0]), nil
+		}
+	}); err != nil {
+		t.Fatalf("RegisterDialectAwareOperatorFunc(dialectMetricPresent) error: %v", err)
 	}
 }
 
@@ -212,8 +293,8 @@ func assertIdentifierQuotingSQL(
 	}
 
 	var logicMap map[string]interface{}
-	if err := json.Unmarshal([]byte(logic), &logicMap); err != nil {
-		t.Fatalf("json.Unmarshal() error: %v", err)
+	if unmarshalErr := json.Unmarshal([]byte(logic), &logicMap); unmarshalErr != nil {
+		t.Fatalf("json.Unmarshal() error: %v", unmarshalErr)
 	}
 
 	fromMapSQL, fromMapParams, err := tr.TranspileParameterizedFromMap(logicMap)

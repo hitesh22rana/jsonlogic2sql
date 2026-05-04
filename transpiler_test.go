@@ -12,6 +12,7 @@ func TestNewTranspiler(t *testing.T) {
 	}
 	if tr == nil {
 		t.Fatal("NewTranspiler() returned nil")
+		return
 	}
 	if tr.parser == nil {
 		t.Fatal("parser is nil")

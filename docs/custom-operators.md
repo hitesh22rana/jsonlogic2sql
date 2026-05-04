@@ -138,6 +138,12 @@ transpiler.ClearCustomOperators()
 
 For operators that generate different SQL based on the target dialect:
 
+`var` operands are converted before they reach custom operators, so custom
+operators receive dialect-correct SQL column references. For example,
+`{"var":"fixture.history.24h.events.total"}` is passed as
+``fixture.history.`24h`.events.total`` for BigQuery/Spanner/ClickHouse and as
+`fixture.history."24h".events.total` for PostgreSQL/DuckDB.
+
 ```go
 transpiler, _ := jsonlogic2sql.NewTranspiler(jsonlogic2sql.DialectBigQuery)
 
