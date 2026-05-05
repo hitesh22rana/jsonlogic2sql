@@ -316,8 +316,7 @@ func jsNumberFromString(input string) (jsNumberLiteral, bool) {
 		if !validRadixDigits(digits, base) {
 			return jsNumberLiteral{}, false
 		}
-		i, err := strconv.ParseInt(digits, base, 64)
-		if err == nil {
+		if i, err := strconv.ParseInt(digits, base, 64); err == nil && i >= minSafeJSInt && i <= maxSafeJSInt {
 			return newJSIntNumber(i), true
 		}
 		bigInt := new(big.Int)
@@ -335,7 +334,7 @@ func jsNumberFromString(input string) (jsNumberLiteral, bool) {
 		return jsNumberLiteral{}, false
 	}
 
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil && i >= minSafeJSInt && i <= maxSafeJSInt {
 		return newJSIntNumber(i), true
 	}
 
@@ -620,6 +619,11 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 
 	switch fieldKind {
 	case "number":
+		if c.schema().GetFieldType(fieldName) == "number" {
+			if _, ok := literal.(json.Number); ok {
+				return dec
+			}
+		}
 		n, handled, valid := jsNumberFromLiteral(literal)
 		if !handled {
 			return dec
