@@ -1,6 +1,7 @@
 package operators
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -780,6 +781,251 @@ func (m *comparisonSchemaProvider) ValidateEnumValue(fieldName, value string) er
 		}
 	}
 	return fmt.Errorf("invalid enum value '%s' for field '%s'", value, fieldName)
+}
+
+func TestJSNumberFromString(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantOK     bool
+		wantString string
+		wantInt    bool
+	}{
+		{input: "", wantOK: true, wantString: "0", wantInt: true},
+		{input: " ", wantOK: true, wantString: "0", wantInt: true},
+		{input: "  5  ", wantOK: true, wantString: "5", wantInt: true},
+		{input: "010", wantOK: true, wantString: "10", wantInt: true},
+		{input: "00010", wantOK: true, wantString: "10", wantInt: true},
+		{input: "+5", wantOK: true, wantString: "5", wantInt: true},
+		{input: "-5", wantOK: true, wantString: "-5", wantInt: true},
+		{input: "5.", wantOK: true, wantString: "5", wantInt: true},
+		{input: ".5", wantOK: true, wantString: "0.5", wantInt: false},
+		{input: "5e2", wantOK: true, wantString: "500", wantInt: true},
+		{input: "0x10", wantOK: true, wantString: "16", wantInt: true},
+		{input: "0X10", wantOK: true, wantString: "16", wantInt: true},
+		{input: "0o10", wantOK: true, wantString: "8", wantInt: true},
+		{input: "0O10", wantOK: true, wantString: "8", wantInt: true},
+		{input: "0b10", wantOK: true, wantString: "2", wantInt: true},
+		{input: "0B10", wantOK: true, wantString: "2", wantInt: true},
+		{input: "5x", wantOK: false},
+		{input: ".", wantOK: false},
+		{input: "0x1.5p3", wantOK: false},
+		{input: "5_000", wantOK: false},
+		{input: "NaN", wantOK: false},
+		{input: "Inf", wantOK: false},
+		{input: "Infinity", wantOK: false},
+		{input: "+0x10", wantOK: false},
+		{input: "-0x10", wantOK: false},
+		{input: "+0o10", wantOK: false},
+		{input: "-0b10", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, ok := jsNumberFromString(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("jsNumberFromString(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if got.integral != tt.wantInt {
+				t.Fatalf("jsNumberFromString(%q) integral = %v, want %v", tt.input, got.integral, tt.wantInt)
+			}
+			if gotString := jsNumberToCanonicalString(got); gotString != tt.wantString {
+				t.Fatalf("jsNumberFromString(%q) canonical = %q, want %q", tt.input, gotString, tt.wantString)
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"amount": "integer",
+		"score":  "number",
+		"active": "boolean",
+		"code":   "string",
+		"status": "enum",
+	})
+	schema.enumValues["status"] = []string{"active", "1"}
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name      string
+		operator  string
+		args      []interface{}
+		wantSQL   string
+		wantError bool
+	}{
+		{
+			name:     "numeric field trims string literal",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, " 5 "},
+			wantSQL:  "amount = 5",
+		},
+		{
+			name:     "numeric field parses leading zero as decimal",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "010"},
+			wantSQL:  "amount = 10",
+		},
+		{
+			name:     "numeric field parses hex string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "0x10"},
+			wantSQL:  "amount = 16",
+		},
+		{
+			name:     "numeric field parses octal string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "0o10"},
+			wantSQL:  "amount = 8",
+		},
+		{
+			name:     "numeric field parses binary string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "0b10"},
+			wantSQL:  "amount = 2",
+		},
+		{
+			name:     "numeric field invalid string folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "numeric field invalid string folds true for not equal",
+			operator: "!=",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
+			wantSQL:  "TRUE",
+		},
+		{
+			name:     "integer field fractional literal folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, 5.5},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "number field fractional string remains numeric",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, ".5"},
+			wantSQL:  "score = 0.5",
+		},
+		{
+			name:     "boolean field numeric one",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, 1},
+			wantSQL:  "active = TRUE",
+		},
+		{
+			name:     "boolean field string zero",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, "0"},
+			wantSQL:  "active = FALSE",
+		},
+		{
+			name:     "boolean field empty string is false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, ""},
+			wantSQL:  "active = FALSE",
+		},
+		{
+			name:     "boolean field non boolean number folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, "2"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "boolean field non numeric string folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, "true"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "string field string literal remains equality",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, "abc"},
+			wantSQL:  "code = 'abc'",
+		},
+		{
+			name:     "string field numeric literal canonicalizes",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, json.Number("5.0")},
+			wantSQL:  "code = '5'",
+		},
+		{
+			name:      "string field boolean literal errors",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "code"}, true},
+			wantError: true,
+		},
+		{
+			name:     "enum field numeric literal validates as canonical string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "status"}, 1},
+			wantSQL:  "status = '1'",
+		},
+		{
+			name:      "enum field boolean literal errors",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "status"}, false},
+			wantError: true,
+		},
+		{
+			name:     "strict numeric field string literal folds false",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "5"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "strict numeric field string literal folds true for not equal",
+			operator: "!==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "5"},
+			wantSQL:  "TRUE",
+		},
+		{
+			name:     "strict string field numeric literal folds false",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, 5},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "strict boolean field numeric literal folds false",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, 1},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "strict boolean field boolean literal remains equality",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "active"}, true},
+			wantSQL:  "active = TRUE",
+		},
+		{
+			name:     "null comparison remains authoritative",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, nil},
+			wantSQL:  "amount IS NULL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := op.ToSQL(tt.operator, tt.args)
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("ToSQL() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ToSQL() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQL() = %q, want %q", got, tt.wantSQL)
+			}
+		})
+	}
 }
 
 func TestComparisonOperator_arrayMembershipSQL(t *testing.T) {
@@ -2500,6 +2746,90 @@ func TestComparisonOperator_ToSQLParam_WithSchemaCoercion(t *testing.T) {
 	assertQueryParams(t, pc.Params(), []params.QueryParam{
 		{Name: "p1", Value: int64(50000)},
 	})
+}
+
+func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"amount": "integer",
+		"active": "boolean",
+		"code":   "string",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       []interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+		wantError  bool
+	}{
+		{
+			name:       "numeric string literal is coerced",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "010"},
+			wantSQL:    "amount = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: int64(10)}},
+		},
+		{
+			name:       "numeric invalid string folds without params",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "boolean string literal coerces inline",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "active"}, "0"},
+			wantSQL:    "active = FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "string numeric literal becomes string param",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, json.Number("5.0")},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "5"}},
+		},
+		{
+			name:       "strict mismatch folds without params",
+			operator:   "===",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "5"},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:      "string boolean literal errors before adding params",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "code"}, true},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.ToSQLParam(tt.operator, tt.args, pc)
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("ToSQLParam() expected error, got nil")
+				}
+				if len(pc.Params()) != 0 {
+					t.Fatalf("ToSQLParam() params on error = %#v, want none", pc.Params())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ToSQLParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQLParam() = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
 }
 
 func TestComparisonOperator_valueToSQLParam_ExpressionParserCallback(t *testing.T) {

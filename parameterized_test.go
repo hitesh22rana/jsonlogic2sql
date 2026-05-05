@@ -99,6 +99,100 @@ func TestTranspileParameterized_Comparison(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_EqualityConstantFoldsDoNotConsumeParams(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	tp.SetSchema(NewSchema([]FieldSchema{
+		{Name: "amount", Type: FieldTypeInteger},
+		{Name: "active", Type: FieldTypeBoolean},
+		{Name: "code", Type: FieldTypeString},
+		{Name: "name", Type: FieldTypeString},
+	}))
+
+	logic := `{"and":[{"!=":[{"var":"amount"},"abc"]},{"==":[{"var":"code"},5]},{"==":[{"var":"active"},"2"]},{"==":[{"var":"name"},"bob"]}]}`
+	gotSQL, gotParams, err := tp.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+
+	wantSQL := "WHERE (TRUE AND code = @p1 AND FALSE AND name = @p2)"
+	if gotSQL != wantSQL {
+		t.Fatalf("SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	assertParams(t, gotParams, []QueryParam{
+		{Name: "p1", Value: "5"},
+		{Name: "p2", Value: "bob"},
+	})
+}
+
+func TestTranspile_EqualitySemanticsAcrossDialects(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "amount", Type: FieldTypeInteger},
+		{Name: "active", Type: FieldTypeBoolean},
+		{Name: "code", Type: FieldTypeString},
+	})
+	logic := `{"and":[{"==":[{"var":"amount"},"010"]},{"==":[{"var":"active"},"0"]},{"==":[{"var":"code"},5]},{"===":[{"var":"amount"},"5"]}]}`
+
+	tests := []struct {
+		dialect      Dialect
+		wantParamSQL string
+	}{
+		{
+			dialect:      DialectBigQuery,
+			wantParamSQL: "WHERE (amount = @p1 AND active = FALSE AND code = @p2 AND FALSE)",
+		},
+		{
+			dialect:      DialectSpanner,
+			wantParamSQL: "WHERE (amount = @p1 AND active = FALSE AND code = @p2 AND FALSE)",
+		},
+		{
+			dialect:      DialectPostgreSQL,
+			wantParamSQL: "WHERE (amount = $1 AND active = FALSE AND code = $2 AND FALSE)",
+		},
+		{
+			dialect:      DialectDuckDB,
+			wantParamSQL: "WHERE (amount = $1 AND active = FALSE AND code = $2 AND FALSE)",
+		},
+		{
+			dialect:      DialectClickHouse,
+			wantParamSQL: "WHERE (amount = @p1 AND active = FALSE AND code = @p2 AND FALSE)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%v", tt.dialect), func(t *testing.T) {
+			tp, err := NewTranspiler(tt.dialect)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			tp.SetSchema(schema)
+
+			gotSQL, err := tp.Transpile(logic)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			wantSQL := "WHERE (amount = 10 AND active = FALSE AND code = '5' AND FALSE)"
+			if gotSQL != wantSQL {
+				t.Fatalf("Transpile() SQL = %q, want %q", gotSQL, wantSQL)
+			}
+
+			gotParamSQL, gotParams, err := tp.TranspileParameterized(logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotParamSQL != tt.wantParamSQL {
+				t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, tt.wantParamSQL)
+			}
+			assertParams(t, gotParams, []QueryParam{
+				{Name: "p1", Value: int64(10)},
+				{Name: "p2", Value: "5"},
+			})
+		})
+	}
+}
+
 func TestTranspileParameterized_Logical(t *testing.T) {
 	tests := []struct {
 		name       string
