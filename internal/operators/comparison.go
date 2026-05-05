@@ -539,6 +539,33 @@ func jsNumberToCanonicalString(n jsNumberLiteral) string {
 	return jsNumberFloatToString(n.float)
 }
 
+func nativeIntegerLiteralString(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case int:
+		return strconv.FormatInt(int64(v), 10), true
+	case int8:
+		return strconv.FormatInt(int64(v), 10), true
+	case int16:
+		return strconv.FormatInt(int64(v), 10), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint64:
+		return strconv.FormatUint(v, 10), true
+	default:
+		return "", false
+	}
+}
+
 func jsNumberFloatToString(f float64) string {
 	if f == 0 {
 		return "0"
@@ -668,7 +695,7 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 	fieldName := field.fieldName
 
 	literal, ok := equalityLiteralValue(literalArg)
-	if !ok || literal == nil {
+	if !ok {
 		return dec
 	}
 
@@ -690,6 +717,10 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 				return dec
 			}
 		}
+	}
+
+	if literal == nil {
+		return dec
 	}
 
 	if isStrictEqualityOperator(operator) {
@@ -807,7 +838,9 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if equalityLiteralKind(literal) == "number" {
-			if n, handled, valid := jsNumberFromLiteral(literal); handled {
+			if exact, ok := nativeIntegerLiteralString(literal); ok {
+				c.setLiteralForFieldSide(&dec, fieldOnLeft, exact)
+			} else if n, handled, valid := jsNumberFromLiteral(literal); handled {
 				if !valid {
 					dec.constant = impossibleEqualityPredicateConstant(operator)
 					return dec

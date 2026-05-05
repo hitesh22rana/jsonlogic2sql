@@ -939,7 +939,7 @@ func TestStringOperator_processComparisonExpression(t *testing.T) {
 			name:     "chained comparison",
 			operator: ">",
 			args:     []interface{}{1, 2, 3},
-			expected: "(1 > 2 AND 2 > 3)",
+			expected: "((1 > 2 AND 2 > 3))",
 			hasError: false,
 		},
 		{

@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1345,6 +1346,39 @@ func TestTypeCoercionForInOperator(t *testing.T) {
 		expected := "WHERE code = '5960'"
 		if result != expected {
 			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+	})
+
+	t.Run("TranspileFromInterface: string field == large Go int64", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+		logic := map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": "code"},
+				int64(9223372036854775807),
+			},
+		}
+
+		result, err := transpiler.TranspileFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code = '9223372036854775807'"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+
+		paramSQL, paramValues, err := transpiler.TranspileParameterizedFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected parameterized error: %v", err)
+		}
+		expectedParamSQL := "WHERE code = @p1"
+		if paramSQL != expectedParamSQL {
+			t.Errorf("Expected parameterized SQL: %s\nGot: %s", expectedParamSQL, paramSQL)
+		}
+		expectedParams := []QueryParam{{Name: "p1", Value: "9223372036854775807"}}
+		if !reflect.DeepEqual(paramValues, expectedParams) {
+			t.Errorf("Expected params: %v\nGot: %v", expectedParams, paramValues)
 		}
 	})
 

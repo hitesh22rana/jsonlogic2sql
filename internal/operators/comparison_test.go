@@ -865,7 +865,7 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 		"code":   "string",
 		"status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1"}
+	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -917,6 +917,18 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
 			wantSQL:  "FALSE",
+		},
+		{
+			name:     "string field preserves Go int64 literal exactly",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, int64(9223372036854775807)},
+			wantSQL:  "code = '9223372036854775807'",
+		},
+		{
+			name:     "enum field validates exact Go int64 string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "status"}, int64(9223372036854775807)},
+			wantSQL:  "status = '9223372036854775807'",
 		},
 		{
 			name:     "defaulted numeric var skips equality folding",
@@ -988,6 +1000,12 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			name:      "defaulted enum validates visible default",
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, "active"},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default before null equality",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
 			wantError: true,
 		},
 		{
@@ -2993,7 +3011,7 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 		"code":   "string",
 		"status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1"}
+	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -3025,6 +3043,20 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
 			wantSQL:    "FALSE",
 			wantParams: nil,
+		},
+		{
+			name:       "string field preserves Go int64 literal exactly",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, int64(9223372036854775807)},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "9223372036854775807"}},
+		},
+		{
+			name:       "enum field validates exact Go int64 string",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "status"}, int64(9223372036854775807)},
+			wantSQL:    "status = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "9223372036854775807"}},
 		},
 		{
 			name:       "defaulted numeric var skips equality folding",
@@ -3105,6 +3137,12 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			name:      "defaulted enum validates visible default",
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, "active"},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default before null equality",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
 			wantError: true,
 		},
 		{

@@ -529,6 +529,29 @@ func TestTranspile_StringNestedComparisonArithmeticPrecedence(t *testing.T) {
 		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantSQL)
 	}
 	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: float64(1)}, {Name: "p2", Value: float64(1)}})
+
+	nestedOperandLogic := `{"cat":[{"+":[{"==":[{"+":[{"var":"a"},1]},{"*":[{"var":"b"},2]}]},1]}]}`
+
+	gotSQL, err = tp.Transpile(nestedOperandLogic)
+	if err != nil {
+		t.Fatalf("Transpile() nested operands error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT((((a + 1) = (b * 2)) + 1))"; gotSQL != wantSQL {
+		t.Fatalf("Transpile() nested operands SQL = %q, want %q", gotSQL, wantSQL)
+	}
+
+	gotParamSQL, gotParams, err = tp.TranspileParameterized(nestedOperandLogic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() nested operands error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT((((a + @p1) = (b * @p2)) + @p3))"; gotParamSQL != wantSQL {
+		t.Fatalf("TranspileParameterized() nested operands SQL = %q, want %q", gotParamSQL, wantSQL)
+	}
+	assertParams(t, gotParams, []QueryParam{
+		{Name: "p1", Value: float64(1)},
+		{Name: "p2", Value: float64(2)},
+		{Name: "p3", Value: float64(1)},
+	})
 }
 
 func TestTranspileParameterized_Data(t *testing.T) {

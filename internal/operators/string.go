@@ -388,10 +388,6 @@ func parenthesizeComparisonSQL(sql string) string {
 	if _, ok := sqlBooleanConstant(sql); ok {
 		return sql
 	}
-	trimmed := strings.TrimSpace(sql)
-	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
-		return sql
-	}
 	return fmt.Sprintf("(%s)", sql)
 }
 
