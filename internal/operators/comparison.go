@@ -574,6 +574,18 @@ func nativeIntegerLiteralString(value interface{}) (string, bool) {
 	}
 }
 
+func nativeFloat32LiteralString(value interface{}) (string, bool) {
+	v, ok := value.(float32)
+	if !ok {
+		return "", false
+	}
+	f := float64(v)
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return "", false
+	}
+	return strconv.FormatFloat(f, 'g', -1, 32), true
+}
+
 func jsNumberFloatToString(f float64) string {
 	if f == 0 {
 		return "0"
@@ -871,6 +883,8 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 		}
 		if equalityLiteralKind(literal) == "number" {
 			if exact, ok := nativeIntegerLiteralString(literal); ok {
+				c.setLiteralForFieldSide(&dec, fieldOnLeft, exact)
+			} else if exact, ok := nativeFloat32LiteralString(literal); ok {
 				c.setLiteralForFieldSide(&dec, fieldOnLeft, exact)
 			} else if n, handled, valid := jsNumberFromLiteral(literal); handled {
 				if !valid {

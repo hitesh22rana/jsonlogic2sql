@@ -866,7 +866,7 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 		"other":  "string",
 		"status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
+	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -930,6 +930,18 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "status"}, int64(9223372036854775807)},
 			wantSQL:  "status = '9223372036854775807'",
+		},
+		{
+			name:     "string field preserves Go float32 literal formatting",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, float32(1.2)},
+			wantSQL:  "code = '1.2'",
+		},
+		{
+			name:     "enum field validates Go float32 literal formatting",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "status"}, float32(1.2)},
+			wantSQL:  "status = '1.2'",
 		},
 		{
 			name:      "malformed json number literal errors before strict fold",
@@ -3049,7 +3061,7 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 		"other":  "string",
 		"status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
+	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -3095,6 +3107,20 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "status"}, int64(9223372036854775807)},
 			wantSQL:    "status = @p1",
 			wantParams: []params.QueryParam{{Name: "p1", Value: "9223372036854775807"}},
+		},
+		{
+			name:       "string field preserves Go float32 literal formatting",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, float32(1.2)},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "1.2"}},
+		},
+		{
+			name:       "enum field validates Go float32 literal formatting",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "status"}, float32(1.2)},
+			wantSQL:    "status = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "1.2"}},
 		},
 		{
 			name:      "malformed json number literal errors before strict fold",

@@ -1382,6 +1382,39 @@ func TestTypeCoercionForInOperator(t *testing.T) {
 		}
 	})
 
+	t.Run("TranspileFromInterface: string field == Go float32", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+		logic := map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": "code"},
+				float32(1.2),
+			},
+		}
+
+		result, err := transpiler.TranspileFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE code = '1.2'"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+
+		paramSQL, paramValues, err := transpiler.TranspileParameterizedFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected parameterized error: %v", err)
+		}
+		expectedParamSQL := "WHERE code = @p1"
+		if paramSQL != expectedParamSQL {
+			t.Errorf("Expected parameterized SQL: %s\nGot: %s", expectedParamSQL, paramSQL)
+		}
+		expectedParams := []QueryParam{{Name: "p1", Value: "1.2"}}
+		if !reflect.DeepEqual(paramValues, expectedParams) {
+			t.Errorf("Expected params: %v\nGot: %v", expectedParams, paramValues)
+		}
+	})
+
 	t.Run("TranspileFromMap: integer field with Go string array", func(t *testing.T) {
 		transpiler, _ := NewTranspiler(DialectBigQuery)
 		transpiler.SetSchema(schema)

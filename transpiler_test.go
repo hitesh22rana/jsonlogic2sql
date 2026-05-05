@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -392,6 +393,40 @@ func TestTranspile_SchemaEqualityValidatesEnumDefaultsForVarOperands(t *testing.
 				t.Fatal("TranspileParameterized() expected error for invalid enum default")
 			}
 		})
+	}
+}
+
+func TestTranspileFromInterface_SchemaEqualityPreservesFloat32ForEnum(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"1.2"}},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+	logic := map[string]interface{}{
+		"==": []interface{}{
+			map[string]interface{}{"var": "status"},
+			float32(1.2),
+		},
+	}
+
+	gotSQL, err := tr.TranspileFromInterface(logic)
+	if err != nil {
+		t.Fatalf("TranspileFromInterface() error = %v", err)
+	}
+	if wantSQL := "WHERE status = '1.2'"; gotSQL != wantSQL {
+		t.Fatalf("TranspileFromInterface() SQL = %q, want %q", gotSQL, wantSQL)
+	}
+
+	gotParamSQL, gotParams, err := tr.TranspileParameterizedFromInterface(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+	}
+	if wantSQL := "WHERE status = @p1"; gotParamSQL != wantSQL {
+		t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", gotParamSQL, wantSQL)
+	}
+	wantParams := []QueryParam{{Name: "p1", Value: "1.2"}}
+	if !reflect.DeepEqual(gotParams, wantParams) {
+		t.Fatalf("TranspileParameterizedFromInterface() params = %v, want %v", gotParams, wantParams)
 	}
 }
 
