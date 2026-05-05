@@ -440,6 +440,72 @@ func TestTranspileParameterized_String(t *testing.T) {
 	}
 }
 
+func TestTranspile_StringNestedEqualitySemanticsWithSchema(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "amount", Type: FieldTypeInteger},
+	})
+	logic := `{"cat":[{"==":[{"var":"amount"},"abc"]}]}`
+	dialects := []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	}
+
+	for _, d := range dialects {
+		t.Run(fmt.Sprintf("%v", d), func(t *testing.T) {
+			tp, err := NewTranspiler(d)
+			if err != nil {
+				t.Fatalf("NewTranspiler() error = %v", err)
+			}
+			tp.SetSchema(schema)
+
+			gotSQL, err := tp.Transpile(logic)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if wantSQL := "WHERE CONCAT(FALSE)"; gotSQL != wantSQL {
+				t.Fatalf("Transpile() SQL = %q, want %q", gotSQL, wantSQL)
+			}
+
+			gotParamSQL, gotParams, err := tp.TranspileParameterized(logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if wantSQL := "WHERE CONCAT(FALSE)"; gotParamSQL != wantSQL {
+				t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantSQL)
+			}
+			assertParams(t, gotParams, nil)
+		})
+	}
+}
+
+func TestTranspile_StringNestedEqualityNoSchema(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	logic := `{"cat":[{"==":[{"var":"amount"},"abc"]}]}`
+
+	gotSQL, err := tp.Transpile(logic)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT(amount = 'abc')"; gotSQL != wantSQL {
+		t.Fatalf("Transpile() SQL = %q, want %q", gotSQL, wantSQL)
+	}
+
+	gotParamSQL, gotParams, err := tp.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT(amount = @p1)"; gotParamSQL != wantSQL {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantSQL)
+	}
+	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: "abc"}})
+}
+
 func TestTranspileParameterized_Data(t *testing.T) {
 	tests := []struct {
 		name       string

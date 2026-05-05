@@ -390,43 +390,8 @@ func (s *StringOperator) processComparisonExpression(op string, args interface{}
 	if !ok {
 		return "", fmt.Errorf("comparison operation requires array of arguments")
 	}
-
-	if len(argsSlice) != 2 {
-		return "", fmt.Errorf("comparison operation requires exactly 2 arguments")
-	}
-
-	// Convert arguments to SQL
-	left, err := s.valueToSQL(argsSlice[0])
-	if err != nil {
-		return "", fmt.Errorf("invalid comparison left argument: %w", err)
-	}
-
-	right, err := s.valueToSQL(argsSlice[1])
-	if err != nil {
-		return "", fmt.Errorf("invalid comparison right argument: %w", err)
-	}
-
-	// Generate SQL based on operation
-	switch op {
-	case ">":
-		return fmt.Sprintf("(%s > %s)", left, right), nil
-	case ">=":
-		return fmt.Sprintf("(%s >= %s)", left, right), nil
-	case "<":
-		return fmt.Sprintf("(%s < %s)", left, right), nil
-	case "<=":
-		return fmt.Sprintf("(%s <= %s)", left, right), nil
-	case "==":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "===":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "!=":
-		return fmt.Sprintf("(%s != %s)", left, right), nil
-	case "!==":
-		return fmt.Sprintf("(%s <> %s)", left, right), nil
-	default:
-		return "", fmt.Errorf("unsupported comparison operation: %s", op)
-	}
+	compOp := NewComparisonOperator(s.config)
+	return compOp.ToSQL(op, argsSlice)
 }
 
 // processMaxMinExpression handles max/min operations within string operations.
