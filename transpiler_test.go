@@ -305,6 +305,62 @@ func TestTranspileFromInterface_RejectsInvalidJSONNumberLiterals(t *testing.T) {
 	}
 }
 
+func TestTranspileFromMap_SchemaEqualityRejectsInvalidJSONNumberBeforeFold(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "code", Type: FieldTypeString},
+		{Name: "amount", Type: FieldTypeInteger},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name  string
+		input map[string]interface{}
+	}{
+		{
+			name: "malformed json number literal before strict fold",
+			input: map[string]interface{}{
+				"!==": []interface{}{
+					map[string]interface{}{"var": "code"},
+					json.Number("0 OR 1=1"),
+				},
+			},
+		},
+		{
+			name: "malformed json number default before strict fold",
+			input: map[string]interface{}{
+				"!==": []interface{}{
+					map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}},
+					"abc",
+				},
+			},
+		},
+		{
+			name: "malformed json number default before loose fold",
+			input: map[string]interface{}{
+				"!=": []interface{}{
+					map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}},
+					"abc",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tr.TranspileFromMap(tt.input); err == nil {
+				t.Fatal("TranspileFromMap() expected error for invalid json.Number")
+			}
+			if _, err := tr.TranspileFromInterface(tt.input); err == nil {
+				t.Fatal("TranspileFromInterface() expected error for invalid json.Number")
+			}
+			if _, _, err := tr.TranspileParameterizedFromInterface(tt.input); err == nil {
+				t.Fatal("TranspileParameterizedFromInterface() expected error for invalid json.Number")
+			}
+		})
+	}
+}
+
 func TestTranspileFromMap_CustomOperatorRejectsInvalidJSONNumberLiterals(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 	_ = tr.RegisterOperatorFunc("identity", func(_ string, args []interface{}) (string, error) {

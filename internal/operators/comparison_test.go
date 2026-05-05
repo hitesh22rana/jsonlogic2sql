@@ -931,6 +931,12 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			wantSQL:  "status = '9223372036854775807'",
 		},
 		{
+			name:      "malformed json number literal errors before strict fold",
+			operator:  "!==",
+			args:      []interface{}{map[string]interface{}{"var": "code"}, json.Number("0 OR 1=1")},
+			wantError: true,
+		},
+		{
 			name:     "defaulted numeric var skips equality folding",
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": []interface{}{"amount", "abc"}}, "abc"},
@@ -1006,6 +1012,18 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			name:      "defaulted enum validates visible default before null equality",
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
+			wantError: true,
+		},
+		{
+			name:      "defaulted var malformed json number default errors before strict fold",
+			operator:  "!==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}}, "abc"},
+			wantError: true,
+		},
+		{
+			name:      "defaulted var malformed json number default errors before loose fold",
+			operator:  "!=",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}}, "abc"},
 			wantError: true,
 		},
 		{
@@ -3059,6 +3077,12 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			wantParams: []params.QueryParam{{Name: "p1", Value: "9223372036854775807"}},
 		},
 		{
+			name:      "malformed json number literal errors before strict fold",
+			operator:  "!==",
+			args:      []interface{}{map[string]interface{}{"var": "code"}, json.Number("0 OR 1=1")},
+			wantError: true,
+		},
+		{
 			name:       "defaulted numeric var skips equality folding",
 			operator:   "==",
 			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", "abc"}}, "abc"},
@@ -3143,6 +3167,18 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			name:      "defaulted enum validates visible default before null equality",
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
+			wantError: true,
+		},
+		{
+			name:      "defaulted var malformed json number default errors before strict fold",
+			operator:  "!==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}}, "abc"},
+			wantError: true,
+		},
+		{
+			name:      "defaulted var malformed json number default errors before loose fold",
+			operator:  "!=",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}}, "abc"},
 			wantError: true,
 		},
 		{

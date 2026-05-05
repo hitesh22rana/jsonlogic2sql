@@ -270,6 +270,14 @@ func equalityLiteralKind(value interface{}) string {
 	}
 }
 
+func validateEqualityJSONNumberLiteral(value interface{}) error {
+	if n, ok := value.(json.Number); ok {
+		_, err := normalizeJSONNumberLiteral(n)
+		return err
+	}
+	return nil
+}
+
 func equalityLiteralsStrictEqual(left, right interface{}) bool {
 	leftKind := equalityLiteralKind(left)
 	rightKind := equalityLiteralKind(right)
@@ -710,7 +718,18 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 	}
 	dec.handled = true
 
+	if err := validateEqualityJSONNumberLiteral(literal); err != nil {
+		dec.unsupported = err
+		return dec
+	}
+
 	if field.hasDefault {
+		if field.defaultLiteralKnown {
+			if err := validateEqualityJSONNumberLiteral(field.defaultLiteral); err != nil {
+				dec.unsupported = err
+				return dec
+			}
+		}
 		if c.schema().IsEnumType(fieldName) && field.defaultLiteralKnown {
 			if err := c.validateEnumValue(field.defaultLiteral, fieldName); err != nil {
 				dec.unsupported = err
