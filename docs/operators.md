@@ -6,7 +6,7 @@ This document lists all JSON Logic operators supported by jsonlogic2sql.
 
 | Operator | Description | Example |
 |----------|-------------|---------|
-| `var` | Access variable values (including array indexing) | `{"var": "name"}` |
+| `var` | Access variable values by field name | `{"var": "name"}` |
 | `missing` | Check if variable(s) are missing | `{"missing": "email"}` |
 | `missing_some` | Check if some variables are missing | `{"missing_some": [1, ["a", "b"]]}` |
 
@@ -19,14 +19,9 @@ This document lists all JSON Logic operators supported by jsonlogic2sql.
 WHERE name
 ```
 
-### Variable with Array Index
-
-```json
-{"var": 1}
-```
-```sql
-WHERE data[1]
-```
+> **Note:** JSONLogic's numeric `var` form, such as `{"var": 1}`, is not
+> supported in SQL output. SQL row values are column-name based, so `var`
+> operands must be string field names or `[fieldName, defaultValue]` arrays.
 
 ### Variable with Default Value
 
