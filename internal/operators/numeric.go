@@ -352,7 +352,11 @@ func (n *NumericOperator) valueToSQL(value interface{}) (string, error) {
 						return "", err
 					}
 					// Delegate to comparison operator
-					return n.comparisonOp.ToSQL(operator, processedArgs)
+					sql, err := n.comparisonOp.ToSQL(operator, processedArgs)
+					if err != nil {
+						return "", err
+					}
+					return parenthesizeComparisonSQL(sql), nil
 				case "+", "-", "*", "/", "%", "max", "min":
 					// Recursively process the arguments
 					processedArgs, err := n.processComplexArgs(arr)
@@ -715,7 +719,11 @@ func (n *NumericOperator) valueToSQLParam(value interface{}, pc *params.ParamCol
 					if err != nil {
 						return "", err
 					}
-					return n.comparisonOp.ToSQLParam(operator, processedArgs, pc)
+					sql, err := n.comparisonOp.ToSQLParam(operator, processedArgs, pc)
+					if err != nil {
+						return "", err
+					}
+					return parenthesizeComparisonSQL(sql), nil
 				case "+", "-", "*", "/", "%", "max", "min":
 					processedArgs, err := n.processComplexArgsParam(arr, pc)
 					if err != nil {

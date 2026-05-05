@@ -492,7 +492,7 @@ func TestTranspile_StringNestedEqualityNoSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transpile() error = %v", err)
 	}
-	if wantSQL := "WHERE CONCAT(amount = 'abc')"; gotSQL != wantSQL {
+	if wantSQL := "WHERE CONCAT((amount = 'abc'))"; gotSQL != wantSQL {
 		t.Fatalf("Transpile() SQL = %q, want %q", gotSQL, wantSQL)
 	}
 
@@ -500,10 +500,35 @@ func TestTranspile_StringNestedEqualityNoSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranspileParameterized() error = %v", err)
 	}
-	if wantSQL := "WHERE CONCAT(amount = @p1)"; gotParamSQL != wantSQL {
+	if wantSQL := "WHERE CONCAT((amount = @p1))"; gotParamSQL != wantSQL {
 		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantSQL)
 	}
 	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: "abc"}})
+}
+
+func TestTranspile_StringNestedComparisonArithmeticPrecedence(t *testing.T) {
+	tp, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	logic := `{"cat":[{"+":[{"==":[{"var":"x"},1]},1]}]}`
+
+	gotSQL, err := tp.Transpile(logic)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT(((x = 1) + 1))"; gotSQL != wantSQL {
+		t.Fatalf("Transpile() SQL = %q, want %q", gotSQL, wantSQL)
+	}
+
+	gotParamSQL, gotParams, err := tp.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if wantSQL := "WHERE CONCAT(((x = @p1) + @p2))"; gotParamSQL != wantSQL {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantSQL)
+	}
+	assertParams(t, gotParams, []QueryParam{{Name: "p1", Value: float64(1)}, {Name: "p2", Value: float64(1)}})
 }
 
 func TestTranspileParameterized_Data(t *testing.T) {

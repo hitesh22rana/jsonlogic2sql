@@ -821,7 +821,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "nested comparison in numeric",
 			input:    `{"+": [{">": [{"var": "a"}, 5]}, {"<": [{"var": "b"}, 10]}]}`,
-			expected: "WHERE (a > 5 + b < 10)",
+			expected: "WHERE ((a > 5) + (b < 10))",
 			hasError: false,
 		},
 		{
@@ -1052,7 +1052,7 @@ func TestAdditionalEdgeCases(t *testing.T) {
 		{
 			name:     "cat with nested if expression",
 			input:    `{"cat": [{"if": [{"==": [{"var": "gender"}, "M"]}, "Mr. ", "Ms. "]}, {"var": "first_name"}, " ", {"var": "last_name"}]}`,
-			expected: "WHERE CONCAT(CASE WHEN gender = 'M' THEN 'Mr. ' ELSE 'Ms. ' END, first_name, ' ', last_name)",
+			expected: "WHERE CONCAT(CASE WHEN (gender = 'M') THEN 'Mr. ' ELSE 'Ms. ' END, first_name, ' ', last_name)",
 			hasError: false,
 		},
 
@@ -2104,7 +2104,7 @@ func TestNestedComparisonSchemaCoercion(t *testing.T) {
 		{
 			name:     "nested in numeric: coercion still applies",
 			input:    `{"+": [{"==": [{"var": "status"}, 123]}, 0]}`,
-			expected: "WHERE (status = '123' + 0)",
+			expected: "WHERE ((status = '123') + 0)",
 		},
 		{
 			name:     "nested in if in numeric: coercion still applies",
@@ -2114,7 +2114,7 @@ func TestNestedComparisonSchemaCoercion(t *testing.T) {
 		{
 			name:     "nested: string coerced to number for integer field",
 			input:    `{"+": [{">": [{"var": "amount"}, "50"]}, 0]}`,
-			expected: "WHERE (amount > 50 + 0)",
+			expected: "WHERE ((amount > 50) + 0)",
 		},
 	}
 

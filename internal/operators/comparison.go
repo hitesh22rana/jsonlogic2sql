@@ -423,6 +423,19 @@ func jsNumberFromLiteral(value interface{}) (jsNumberLiteral, bool, bool) {
 	}
 }
 
+func jsonNumberIntegerOutsideInt64(value interface{}) bool {
+	num, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	numStr := num.String()
+	if !isIntegerLiteral(numStr) {
+		return false
+	}
+	_, err := strconv.ParseInt(numStr, 10, 64)
+	return err != nil
+}
+
 func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
 	if i, ok := n.value.(int64); ok {
 		return i, true
@@ -433,12 +446,14 @@ func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
 
 	// float64(math.MaxInt64) rounds up to 2^63, so using math.MaxInt64 as
 	// a float bound can silently clamp MaxInt64+1 back to MaxInt64. Only
-	// convert float-origin values that are strictly inside the int64 range.
+	// convert float-origin values that are inside the valid int64 range.
+	// The lower bound is exactly representable and valid; the upper bound is
+	// exclusive because it is 2^63, one greater than MaxInt64.
 	const (
 		minInt64Float = -9223372036854775808.0
 		maxInt64Float = 9223372036854775808.0
 	)
-	if n.float <= minInt64Float || n.float >= maxInt64Float {
+	if n.float < minInt64Float || n.float >= maxInt64Float {
 		return 0, false
 	}
 	i := int64(n.float)
@@ -600,6 +615,10 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if fieldKind == "number" && c.schema().GetFieldType(fieldName) == "integer" {
+			if jsonNumberIntegerOutsideInt64(literal) {
+				dec.constant = impossibleEqualityPredicateConstant(operator)
+				return dec
+			}
 			if n, handled, valid := jsNumberFromLiteral(literal); handled {
 				if !valid || !n.integral {
 					dec.constant = impossibleEqualityPredicateConstant(operator)
@@ -634,6 +653,10 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 		}
 		value := n.value
 		if c.schema().GetFieldType(fieldName) == "integer" {
+			if jsonNumberIntegerOutsideInt64(literal) {
+				dec.constant = impossibleEqualityPredicateConstant(operator)
+				return dec
+			}
 			if !n.integral {
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec

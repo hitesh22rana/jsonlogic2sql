@@ -943,6 +943,18 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			wantSQL:  "amount = -9223372036854775808",
 		},
 		{
+			name:     "integer field min int64 string remains equality",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "-9223372036854775808"},
+			wantSQL:  "amount = -9223372036854775808",
+		},
+		{
+			name:     "integer field min int64 string remains inequality",
+			operator: "!=",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "-9223372036854775808"},
+			wantSQL:  "amount != -9223372036854775808",
+		},
+		{
 			name:     "integer field above int64 range folds false",
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "amount"}, json.Number("9223372036854775808")},
@@ -2959,6 +2971,20 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "amount"}, json.Number("9223372036854775808")},
 			wantSQL:    "FALSE",
 			wantParams: nil,
+		},
+		{
+			name:       "numeric min int64 string remains param",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "-9223372036854775808"},
+			wantSQL:    "amount = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: int64(-9223372036854775807 - 1)}},
+		},
+		{
+			name:       "numeric min int64 string not equal remains param",
+			operator:   "!=",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "-9223372036854775808"},
+			wantSQL:    "amount != @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: int64(-9223372036854775807 - 1)}},
 		},
 		{
 			name:       "numeric above int64 range folds true for not equal without params",

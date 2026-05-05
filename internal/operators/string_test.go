@@ -312,7 +312,7 @@ func TestStringOperator_NestedOperations(t *testing.T) {
 					},
 				},
 			},
-			expected: "CONCAT('Status: ', CASE WHEN (x > 0 AND x < 100) THEN 'OK' ELSE 'ERROR' END)",
+			expected: "CONCAT('Status: ', CASE WHEN ((x > 0) AND (x < 100)) THEN 'OK' ELSE 'ERROR' END)",
 			hasError: false,
 		},
 		// Or inside if inside cat
@@ -334,7 +334,7 @@ func TestStringOperator_NestedOperations(t *testing.T) {
 					},
 				},
 			},
-			expected: "CONCAT('Result: ', CASE WHEN (type = 'A' OR type = 'B') THEN 'VALID' ELSE 'INVALID' END)",
+			expected: "CONCAT('Result: ', CASE WHEN ((type = 'A') OR (type = 'B')) THEN 'VALID' ELSE 'INVALID' END)",
 			hasError: false,
 		},
 	}
@@ -598,7 +598,18 @@ func TestStringOperator_valueToSQL_Extended(t *testing.T) {
 		{
 			name:     "comparison inside string context",
 			input:    map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
-			expected: "x > 0",
+			expected: "(x > 0)",
+			hasError: false,
+		},
+		{
+			name: "comparison remains grouped inside arithmetic string context",
+			input: map[string]interface{}{
+				"+": []interface{}{
+					map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "x"}, 1}},
+					1,
+				},
+			},
+			expected: "((x = 1) + 1)",
 			hasError: false,
 		},
 		{
@@ -858,56 +869,56 @@ func TestStringOperator_processComparisonExpression(t *testing.T) {
 			name:     "greater than",
 			operator: ">",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x > 5",
+			expected: "(x > 5)",
 			hasError: false,
 		},
 		{
 			name:     "greater than or equal",
 			operator: ">=",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x >= 5",
+			expected: "(x >= 5)",
 			hasError: false,
 		},
 		{
 			name:     "less than",
 			operator: "<",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x < 5",
+			expected: "(x < 5)",
 			hasError: false,
 		},
 		{
 			name:     "less than or equal",
 			operator: "<=",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x <= 5",
+			expected: "(x <= 5)",
 			hasError: false,
 		},
 		{
 			name:     "equality",
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x = 5",
+			expected: "(x = 5)",
 			hasError: false,
 		},
 		{
 			name:     "strict equality",
 			operator: "===",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x = 5",
+			expected: "(x = 5)",
 			hasError: false,
 		},
 		{
 			name:     "inequality",
 			operator: "!=",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x != 5",
+			expected: "(x != 5)",
 			hasError: false,
 		},
 		{
 			name:     "strict inequality",
 			operator: "!==",
 			args:     []interface{}{map[string]interface{}{"var": "x"}, 5},
-			expected: "x <> 5",
+			expected: "(x <> 5)",
 			hasError: false,
 		},
 		{
@@ -1092,6 +1103,20 @@ func TestStringOperator_valueToSQLParam(t *testing.T) {
 			wantSQL: "@p1",
 			wantParams: []params.QueryParam{
 				{Name: "p1", Value: "lit"},
+			},
+		},
+		{
+			name: "comparison remains grouped inside parameterized arithmetic string context",
+			value: map[string]interface{}{
+				"+": []interface{}{
+					map[string]interface{}{"==": []interface{}{map[string]interface{}{"var": "x"}, 1}},
+					1,
+				},
+			},
+			wantSQL: "((x = @p1) + @p2)",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: 1},
+				{Name: "p2", Value: 1},
 			},
 		},
 	}

@@ -825,7 +825,7 @@ func TestNumericOperator_valueToSQL_NestedComparison(t *testing.T) {
 	if err != nil {
 		t.Errorf("valueToSQL() unexpected error = %v", err)
 	}
-	expected := "status = 'active'"
+	expected := "(status = 'active')"
 	if result != expected {
 		t.Errorf("valueToSQL() = %v, want %v", result, expected)
 	}

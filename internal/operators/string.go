@@ -384,6 +384,17 @@ func (s *StringOperator) processIfExpression(args interface{}) (string, error) {
 	return result.String(), nil
 }
 
+func parenthesizeComparisonSQL(sql string) string {
+	if _, ok := sqlBooleanConstant(sql); ok {
+		return sql
+	}
+	trimmed := strings.TrimSpace(sql)
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		return sql
+	}
+	return fmt.Sprintf("(%s)", sql)
+}
+
 // processComparisonExpression handles comparison operations within string operations.
 func (s *StringOperator) processComparisonExpression(op string, args interface{}) (string, error) {
 	argsSlice, ok := args.([]interface{})
@@ -391,7 +402,11 @@ func (s *StringOperator) processComparisonExpression(op string, args interface{}
 		return "", fmt.Errorf("comparison operation requires array of arguments")
 	}
 	compOp := NewComparisonOperator(s.config)
-	return compOp.ToSQL(op, argsSlice)
+	sql, err := compOp.ToSQL(op, argsSlice)
+	if err != nil {
+		return "", err
+	}
+	return parenthesizeComparisonSQL(sql), nil
 }
 
 // processMaxMinExpression handles max/min operations within string operations.
@@ -589,7 +604,11 @@ func (s *StringOperator) valueToSQLParam(value interface{}, pc *params.ParamColl
 						return "", fmt.Errorf("comparison operation requires array of arguments")
 					}
 					compOp := NewComparisonOperator(s.config)
-					return compOp.ToSQLParam(op, argsSlice, pc)
+					sql, err := compOp.ToSQLParam(op, argsSlice, pc)
+					if err != nil {
+						return "", err
+					}
+					return parenthesizeComparisonSQL(sql), nil
 				case "if":
 					argsSlice, ok := args.([]interface{})
 					if !ok {
