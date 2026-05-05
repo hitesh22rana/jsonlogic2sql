@@ -26,6 +26,10 @@ WHERE name
 WHERE COALESCE(status, 'pending')
 ```
 
+With a schema, equality and inequality comparisons against `[field, default]`
+vars keep the `COALESCE` expression and still coerce the comparison literal
+where supported.
+
 ### Missing Field Check (Single)
 
 ```json

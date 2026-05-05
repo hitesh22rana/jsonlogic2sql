@@ -32,6 +32,11 @@ WHERE name
 WHERE COALESCE(status, 'pending')
 ```
 
+With a schema, equality and inequality comparisons against `[field, default]`
+vars preserve the `COALESCE` expression while applying schema-aware coercion to
+the comparison literal. The default value is emitted as provided; visible enum
+defaults are validated when enum values are configured.
+
 > **Note:** Path segments that start with a digit (e.g. `24h`, `7d`) are automatically quoted using the dialect-appropriate character. See [Identifier Quoting](dialects.md#identifier-quoting) for details.
 
 ### Missing Field Check (Single)

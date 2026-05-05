@@ -143,6 +143,7 @@ When a schema is configured, values are coerced **before** being bound as parame
 ```go
 schema, err := jsonlogic2sql.NewValidatedSchema([]jsonlogic2sql.FieldSchema{
     {Name: "amount", Type: jsonlogic2sql.FieldTypeInteger},
+    {Name: "active", Type: jsonlogic2sql.FieldTypeBoolean},
 })
 if err != nil {
     // handle invalid schema
@@ -165,6 +166,18 @@ sql, params, _ = transpiler.TranspileParameterized(
 )
 // sql    = "WHERE (amount = @p1 AND active = FALSE)"
 // params = [{Name: "p1", Value: int64(10)}]
+```
+
+The same equality coercion applies when the field is accessed with a defaulted
+`var`; parameters are collected for the default and the coerced literal in SQL
+order:
+
+```go
+sql, params, _ = transpiler.TranspileParameterized(
+    `{"==": [{"var": ["amount", 0]}, "50"]}`,
+)
+// sql    = "WHERE COALESCE(amount, @p1) = @p2"
+// params = [{Name: "p1", Value: int64(0)}, {Name: "p2", Value: int64(50)}]
 ```
 
 ## Using Parameters with Database Drivers

@@ -239,6 +239,30 @@ _, err := transpiler.Transpile(`{"==": [{"var": "code"}, true]}`)
 // Error: loose equality between string field "code" and boolean literal is not supported
 ```
 
+**Defaulted Variables** - Equality and inequality apply the same schema-aware
+literal coercion to `[field, default]` vars while preserving the `COALESCE`
+expression emitted by the `var` operator:
+
+```go
+// Schema: price is integer type
+sql, _ = transpiler.Transpile(`{"==": [{"var": ["price", 0]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE COALESCE(price, 0) = 50
+
+sql, _ = transpiler.Transpile(`{"===": [{"var": ["price", 0]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE FALSE
+
+sql, _ = transpiler.Transpile(`{"===": [{"var": ["price", "50"]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE COALESCE(price, '50') = '50'
+```
+
+Strict or value-space folds only happen when both the field value and the
+visible default cannot match. Expression defaults are not folded because their
+runtime value is unknown. The default value itself is emitted as provided by the
+`var` operator; it is not coerced to the schema type before `COALESCE`.
+
 Basic schema coercion applies to comparison operators (`==`, `!=`, `>`, `>=`, `<`, `<=`), the `in` operator with array literals, and string containment checks. Equality and inequality add the JS-aware literal handling described above. Schema coercion also applies to comparisons nested within numeric expressions (e.g., `{"+": [{"==": [{"var": "status"}, 123]}, 0]}` correctly coerces `123` to `'123'` for a string field).
 
 **Numeric String Coercion** - In numeric operations (`+`, `-`, `*`, `/`, `%`), string operands are coerced per JSONLogic's JavaScript-like semantics. Valid numeric strings are converted to numbers, whitespace is trimmed, and non-numeric strings are safely quoted:
@@ -293,6 +317,17 @@ sql, err = transpiler.Transpile(`{"in": [{"var": "status"}, ["active", "pending"
 _, err = transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 // Error: invalid enum value 'invalid' for field 'status': allowed values are [active pending cancelled]
 ```
+
+Visible enum defaults are also validated because they become literal SQL inside
+`COALESCE`:
+
+```go
+_, err = transpiler.Transpile(`{"==": [{"var": ["status", "unknown"]}, "active"]}`)
+// Error: invalid enum value 'unknown' for field 'status': allowed values are [active pending cancelled]
+```
+
+Expression defaults cannot be validated statically and are left to the generated
+SQL expression.
 
 ### Enum Schema JSON Format
 
