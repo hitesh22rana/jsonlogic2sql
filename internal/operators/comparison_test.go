@@ -944,6 +944,24 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			wantSQL:  "status = '1.2'",
 		},
 		{
+			name:     "integer field preserves large uint64 literal within int64 range",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, uint64(9007199254740993)},
+			wantSQL:  "amount = 9007199254740993",
+		},
+		{
+			name:     "number field preserves large uint64 literal above int64 range",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, uint64(9223372036854775808)},
+			wantSQL:  "score = 9223372036854775808",
+		},
+		{
+			name:     "integer field uint64 above int64 range folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, uint64(9223372036854775808)},
+			wantSQL:  "FALSE",
+		},
+		{
 			name:      "malformed json number literal errors before strict fold",
 			operator:  "!==",
 			args:      []interface{}{map[string]interface{}{"var": "code"}, json.Number("0 OR 1=1")},
@@ -3121,6 +3139,27 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "status"}, float32(1.2)},
 			wantSQL:    "status = @p1",
 			wantParams: []params.QueryParam{{Name: "p1", Value: "1.2"}},
+		},
+		{
+			name:       "integer field preserves large uint64 literal within int64 range",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, uint64(9007199254740993)},
+			wantSQL:    "amount = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: int64(9007199254740993)}},
+		},
+		{
+			name:       "number field preserves large uint64 literal above int64 range",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, uint64(9223372036854775808)},
+			wantSQL:    "score = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: uint64(9223372036854775808)}},
+		},
+		{
+			name:       "integer field uint64 above int64 range folds without params",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, uint64(9223372036854775808)},
+			wantSQL:    "FALSE",
+			wantParams: nil,
 		},
 		{
 			name:      "malformed json number literal errors before strict fold",

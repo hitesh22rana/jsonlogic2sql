@@ -1415,6 +1415,76 @@ func TestTypeCoercionForInOperator(t *testing.T) {
 		}
 	})
 
+	t.Run("TranspileFromInterface: number field == large Go uint64", func(t *testing.T) {
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+		logic := map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": "price"},
+				uint64(9223372036854775808),
+			},
+		}
+
+		result, err := transpiler.TranspileFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE price = 9223372036854775808"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+
+		paramSQL, paramValues, err := transpiler.TranspileParameterizedFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected parameterized error: %v", err)
+		}
+		expectedParamSQL := "WHERE price = @p1"
+		if paramSQL != expectedParamSQL {
+			t.Errorf("Expected parameterized SQL: %s\nGot: %s", expectedParamSQL, paramSQL)
+		}
+		expectedParams := []QueryParam{{Name: "p1", Value: uint64(9223372036854775808)}}
+		if !reflect.DeepEqual(paramValues, expectedParams) {
+			t.Errorf("Expected params: %v\nGot: %v", expectedParams, paramValues)
+		}
+	})
+
+	t.Run("TranspileFromInterface: integer field == large Go uint on 64-bit", func(t *testing.T) {
+		if ^uint(0) <= uint(0xffffffff) {
+			t.Skip("large uint literal requires 64-bit uint")
+		}
+		transpiler, _ := NewTranspiler(DialectBigQuery)
+		transpiler.SetSchema(schema)
+		largeUint := uint(uint64(9007199254740993))
+		logic := map[string]interface{}{
+			"==": []interface{}{
+				map[string]interface{}{"var": "amount"},
+				largeUint,
+			},
+		}
+
+		result, err := transpiler.TranspileFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "WHERE amount = 9007199254740993"
+		if result != expected {
+			t.Errorf("Expected: %s\nGot: %s", expected, result)
+		}
+
+		paramSQL, paramValues, err := transpiler.TranspileParameterizedFromInterface(logic)
+		if err != nil {
+			t.Fatalf("Unexpected parameterized error: %v", err)
+		}
+		expectedParamSQL := "WHERE amount = @p1"
+		if paramSQL != expectedParamSQL {
+			t.Errorf("Expected parameterized SQL: %s\nGot: %s", expectedParamSQL, paramSQL)
+		}
+		expectedParams := []QueryParam{{Name: "p1", Value: int64(9007199254740993)}}
+		if !reflect.DeepEqual(paramValues, expectedParams) {
+			t.Errorf("Expected params: %v\nGot: %v", expectedParams, paramValues)
+		}
+	})
+
 	t.Run("TranspileFromMap: integer field with Go string array", func(t *testing.T) {
 		transpiler, _ := NewTranspiler(DialectBigQuery)
 		transpiler.SetSchema(schema)

@@ -441,6 +441,14 @@ func newJSFloatNumber(f float64) jsNumberLiteral {
 	}
 }
 
+func newJSUintNumber(value interface{}, f float64) jsNumberLiteral {
+	return jsNumberLiteral{
+		value:    value,
+		float:    f,
+		integral: true,
+	}
+}
+
 func jsNumberFromLiteral(value interface{}) (jsNumberLiteral, bool, bool) {
 	switch v := value.(type) {
 	case string:
@@ -486,18 +494,15 @@ func jsNumberFromLiteral(value interface{}) (jsNumberLiteral, bool, bool) {
 	case int64:
 		return newJSIntNumber(v), true, true
 	case uint:
-		return newJSFloatNumber(float64(v)), true, true
+		return newJSUintNumber(v, float64(v)), true, true
 	case uint8:
-		return newJSIntNumber(int64(v)), true, true
+		return newJSUintNumber(v, float64(v)), true, true
 	case uint16:
-		return newJSIntNumber(int64(v)), true, true
+		return newJSUintNumber(v, float64(v)), true, true
 	case uint32:
-		return newJSIntNumber(int64(v)), true, true
+		return newJSUintNumber(v, float64(v)), true, true
 	case uint64:
-		if v <= math.MaxInt64 {
-			return newJSIntNumber(int64(v)), true, true
-		}
-		return newJSFloatNumber(float64(v)), true, true
+		return newJSUintNumber(v, float64(v)), true, true
 	default:
 		return jsNumberLiteral{}, false, false
 	}
@@ -519,6 +524,24 @@ func jsonNumberIntegerOutsideInt64(value interface{}) bool {
 func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
 	if i, ok := n.value.(int64); ok {
 		return i, true
+	}
+	switch v := n.value.(type) {
+	case uint:
+		if uint64(v) <= uint64(math.MaxInt64) {
+			return int64(v), true
+		}
+		return 0, false
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		if v <= uint64(math.MaxInt64) {
+			return int64(v), true
+		}
+		return 0, false
 	}
 	if !n.integral {
 		return 0, false
