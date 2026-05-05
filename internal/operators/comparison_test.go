@@ -3,6 +3,7 @@ package operators
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -954,6 +955,30 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "score"}, uint64(9223372036854775808)},
 			wantSQL:  "score = 9223372036854775808",
+		},
+		{
+			name:     "strict number field folds NaN false",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, math.NaN()},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "strict number field folds NaN true for not equal",
+			operator: "!==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, math.NaN()},
+			wantSQL:  "TRUE",
+		},
+		{
+			name:     "strict number field folds infinity false",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, math.Inf(1)},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "strict number field folds infinity true for not equal",
+			operator: "!==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, math.Inf(1)},
+			wantSQL:  "TRUE",
 		},
 		{
 			name:     "integer field uint64 above int64 range folds false",
@@ -3153,6 +3178,34 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "score"}, uint64(9223372036854775808)},
 			wantSQL:    "score = @p1",
 			wantParams: []params.QueryParam{{Name: "p1", Value: uint64(9223372036854775808)}},
+		},
+		{
+			name:       "strict number field folds NaN without params",
+			operator:   "===",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, math.NaN()},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "strict number field folds NaN true for not equal without params",
+			operator:   "!==",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, math.NaN()},
+			wantSQL:    "TRUE",
+			wantParams: nil,
+		},
+		{
+			name:       "strict number field folds infinity without params",
+			operator:   "===",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, math.Inf(1)},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "strict number field folds infinity true for not equal without params",
+			operator:   "!==",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, math.Inf(1)},
+			wantSQL:    "TRUE",
+			wantParams: nil,
 		},
 		{
 			name:       "integer field uint64 above int64 range folds without params",

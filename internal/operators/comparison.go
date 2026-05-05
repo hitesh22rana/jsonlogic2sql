@@ -799,6 +799,14 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			dec.constant = impossibleEqualityPredicateConstant(operator)
 			return dec
 		}
+		if fieldKind == "number" {
+			if _, isJSONNumber := literal.(json.Number); !isJSONNumber {
+				if _, handled, valid := jsNumberFromLiteral(literal); handled && !valid {
+					dec.constant = impossibleEqualityPredicateConstant(operator)
+					return dec
+				}
+			}
+		}
 		if fieldKind == "number" && c.schema().GetFieldType(fieldName) == "integer" {
 			if jsonNumberIntegerOutsideInt64(literal) {
 				if field.hasDefault && field.defaultCanStrictEqual(literal) {

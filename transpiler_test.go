@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -427,6 +428,56 @@ func TestTranspileFromInterface_SchemaEqualityPreservesFloat32ForEnum(t *testing
 	wantParams := []QueryParam{{Name: "p1", Value: "1.2"}}
 	if !reflect.DeepEqual(gotParams, wantParams) {
 		t.Fatalf("TranspileParameterizedFromInterface() params = %v, want %v", gotParams, wantParams)
+	}
+}
+
+func TestTranspileFromInterface_SchemaNumberStrictEqualityFoldsNonFinite(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "score", Type: FieldTypeNumber},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name    string
+		op      string
+		value   float64
+		wantSQL string
+	}{
+		{name: "strict NaN", op: "===", value: math.NaN(), wantSQL: "WHERE FALSE"},
+		{name: "strict not NaN", op: "!==", value: math.NaN(), wantSQL: "WHERE TRUE"},
+		{name: "strict infinity", op: "===", value: math.Inf(1), wantSQL: "WHERE FALSE"},
+		{name: "strict not infinity", op: "!==", value: math.Inf(1), wantSQL: "WHERE TRUE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logic := map[string]interface{}{
+				tt.op: []interface{}{
+					map[string]interface{}{"var": "score"},
+					tt.value,
+				},
+			}
+
+			gotSQL, err := tr.TranspileFromInterface(logic)
+			if err != nil {
+				t.Fatalf("TranspileFromInterface() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Fatalf("TranspileFromInterface() SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+
+			gotParamSQL, gotParams, err := tr.TranspileParameterizedFromInterface(logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+			}
+			if gotParamSQL != tt.wantSQL {
+				t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", gotParamSQL, tt.wantSQL)
+			}
+			if len(gotParams) != 0 {
+				t.Fatalf("TranspileParameterizedFromInterface() params = %v, want none", gotParams)
+			}
+		})
 	}
 }
 
