@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/h22rana/jsonlogic2sql/internal/dialect"
@@ -721,6 +722,7 @@ type comparisonSchemaProvider struct {
 	fields      map[string]string   // field name -> type
 	enumValues  map[string][]string // field name -> allowed values
 	knownFields map[string]bool     // fields that exist
+	validateErr error
 }
 
 func newComparisonSchemaProvider(fields map[string]string) *comparisonSchemaProvider {
@@ -743,7 +745,13 @@ func (m *comparisonSchemaProvider) GetFieldType(fieldName string) string {
 	return m.fields[fieldName]
 }
 
-func (m *comparisonSchemaProvider) ValidateField(_ string) error {
+func (m *comparisonSchemaProvider) ValidateField(fieldName string) error {
+	if m.validateErr != nil {
+		return m.validateErr
+	}
+	if !m.HasField(fieldName) {
+		return fmt.Errorf("field '%s' is not defined in schema", fieldName)
+	}
 	return nil
 }
 
@@ -807,10 +815,14 @@ func TestJSNumberFromString(t *testing.T) {
 		{input: "9223372036854775808", wantOK: true, wantString: "9223372036854776000", wantInt: true},
 		{input: "0x10", wantOK: true, wantString: "16", wantInt: true},
 		{input: "0X10", wantOK: true, wantString: "16", wantInt: true},
+		{input: "0x8000000000000000", wantOK: true, wantString: "9223372036854776000", wantInt: true},
+		{input: "0xffffffffffffffff", wantOK: true, wantString: "18446744073709552000", wantInt: true},
 		{input: "0o10", wantOK: true, wantString: "8", wantInt: true},
 		{input: "0O10", wantOK: true, wantString: "8", wantInt: true},
+		{input: "0o1000000000000000000000", wantOK: true, wantString: "9223372036854776000", wantInt: true},
 		{input: "0b10", wantOK: true, wantString: "2", wantInt: true},
 		{input: "0B10", wantOK: true, wantString: "2", wantInt: true},
+		{input: "0b1000000000000000000000000000000000000000000000000000000000000000", wantOK: true, wantString: "9223372036854776000", wantInt: true},
 		{input: "5x", wantOK: false},
 		{input: ".", wantOK: false},
 		{input: "0x1.5p3", wantOK: false},
@@ -959,6 +971,24 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			wantSQL:  "score = 0.5",
 		},
 		{
+			name:     "number field oversized hex string remains numeric",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, "0x8000000000000000"},
+			wantSQL:  "score = 9.223372036854776e+18",
+		},
+		{
+			name:     "number field oversized binary string remains numeric",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "score"}, "0b1000000000000000000000000000000000000000000000000000000000000000"},
+			wantSQL:  "score = 9.223372036854776e+18",
+		},
+		{
+			name:     "integer field oversized hex string folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "amount"}, "0x8000000000000000"},
+			wantSQL:  "FALSE",
+		},
+		{
 			name:     "boolean field numeric one",
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "active"}, 1},
@@ -1088,6 +1118,44 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			}
 			if got != tt.wantSQL {
 				t.Fatalf("ToSQL() = %q, want %q", got, tt.wantSQL)
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQL_EqualityConstantFoldsValidateSchema(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"bad`field": "integer",
+	})
+	schema.validateErr = fmt.Errorf("schema field %q contains quote characters", "bad`field")
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []interface{}
+	}{
+		{
+			name:     "loose impossible comparison validates schema",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "bad`field"}, "abc"},
+		},
+		{
+			name:     "strict type mismatch validates schema",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "bad`field"}, "5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := op.ToSQL(tt.operator, tt.args)
+			if err == nil {
+				t.Fatalf("ToSQL() = %q, expected schema validation error", got)
+			}
+			if !strings.Contains(err.Error(), "contains quote characters") {
+				t.Fatalf("ToSQL() error = %v, want schema validation error", err)
 			}
 		})
 	}
@@ -2816,6 +2884,7 @@ func TestComparisonOperator_ToSQLParam_WithSchemaCoercion(t *testing.T) {
 func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T) {
 	schema := newComparisonSchemaProvider(map[string]string{
 		"amount": "integer",
+		"score":  "number",
 		"active": "boolean",
 		"code":   "string",
 	})
@@ -2863,6 +2932,20 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			operator:   "!=",
 			args:       []interface{}{map[string]interface{}{"var": "amount"}, json.Number("9223372036854775808")},
 			wantSQL:    "TRUE",
+			wantParams: nil,
+		},
+		{
+			name:       "number oversized radix string becomes numeric param",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "score"}, "0x8000000000000000"},
+			wantSQL:    "score = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: float64(9223372036854775808)}},
+		},
+		{
+			name:       "integer oversized radix string folds without params",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "amount"}, "0x8000000000000000"},
+			wantSQL:    "FALSE",
 			wantParams: nil,
 		},
 		{
@@ -2928,6 +3011,48 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 				t.Fatalf("ToSQLParam() = %q, want %q", got, tt.wantSQL)
 			}
 			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQLParam_EqualityConstantFoldsValidateSchema(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"bad`field": "integer",
+	})
+	schema.validateErr = fmt.Errorf("schema field %q contains quote characters", "bad`field")
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []interface{}
+	}{
+		{
+			name:     "loose impossible comparison validates schema",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "bad`field"}, "abc"},
+		},
+		{
+			name:     "strict type mismatch validates schema",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": "bad`field"}, "5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.ToSQLParam(tt.operator, tt.args, pc)
+			if err == nil {
+				t.Fatalf("ToSQLParam() = %q, expected schema validation error", got)
+			}
+			if !strings.Contains(err.Error(), "contains quote characters") {
+				t.Fatalf("ToSQLParam() error = %v, want schema validation error", err)
+			}
+			if len(pc.Params()) != 0 {
+				t.Fatalf("ToSQLParam() params on validation error = %#v, want none", pc.Params())
+			}
 		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -316,10 +317,18 @@ func jsNumberFromString(input string) (jsNumberLiteral, bool) {
 			return jsNumberLiteral{}, false
 		}
 		i, err := strconv.ParseInt(digits, base, 64)
-		if err != nil {
+		if err == nil {
+			return newJSIntNumber(i), true
+		}
+		bigInt := new(big.Int)
+		if _, ok := bigInt.SetString(digits, base); !ok {
 			return jsNumberLiteral{}, false
 		}
-		return newJSIntNumber(i), true
+		f, _ := new(big.Float).SetInt(bigInt).Float64()
+		if math.IsInf(f, 0) {
+			return jsNumberLiteral{}, false
+		}
+		return newJSFloatNumber(f), true
 	}
 
 	if strings.Contains(s, "_") {
@@ -578,6 +587,10 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 
 	fieldKind := c.fieldEqualityKind(fieldName)
 	if fieldKind == "" {
+		return dec
+	}
+	if err := c.schema().ValidateField(fieldName); err != nil {
+		dec.unsupported = err
 		return dec
 	}
 
