@@ -19,10 +19,18 @@ type ComparisonOperator struct {
 }
 
 type equalityDecision struct {
+	handled     bool
 	left        interface{}
 	right       interface{}
 	constant    *bool
 	unsupported error
+}
+
+type equalityFieldOperand struct {
+	fieldName           string
+	hasDefault          bool
+	defaultLiteral      interface{}
+	defaultLiteralKnown bool
 }
 
 type jsNumberLiteral struct {
@@ -144,33 +152,38 @@ func (c *ComparisonOperator) extractFieldName(varName interface{}) string {
 	return ""
 }
 
-// extractEqualityFieldName extracts only plain field references for schema-aware
-// equality rewrites. Array-form vars with defaults must keep their COALESCE
-// semantics, so they are intentionally excluded.
-func (c *ComparisonOperator) extractEqualityFieldName(value interface{}) string {
+func (c *ComparisonOperator) extractEqualityFieldOperand(value interface{}) (equalityFieldOperand, bool) {
 	varExpr, ok := value.(map[string]interface{})
 	if !ok {
-		return ""
+		return equalityFieldOperand{}, false
 	}
 	if len(varExpr) != 1 {
-		return ""
+		return equalityFieldOperand{}, false
 	}
 	varName, hasVar := varExpr[OpVar]
 	if !hasVar {
-		return ""
+		return equalityFieldOperand{}, false
 	}
 	switch v := varName.(type) {
 	case string:
-		return v
+		return equalityFieldOperand{fieldName: v}, true
 	case []interface{}:
-		if len(v) != 1 {
-			return ""
+		if len(v) == 0 {
+			return equalityFieldOperand{}, false
 		}
 		if name, ok := v[0].(string); ok {
-			return name
+			operand := equalityFieldOperand{fieldName: name}
+			if len(v) > 1 {
+				operand.hasDefault = true
+				if literal, ok := equalityLiteralValue(v[1]); ok {
+					operand.defaultLiteral = literal
+					operand.defaultLiteralKnown = true
+				}
+			}
+			return operand, true
 		}
 	}
-	return ""
+	return equalityFieldOperand{}, false
 }
 
 func isEqualityOperator(operator string) bool {
@@ -242,6 +255,8 @@ func equalityLiteralValue(value interface{}) (interface{}, bool) {
 
 func equalityLiteralKind(value interface{}) string {
 	switch value.(type) {
+	case nil:
+		return "null"
 	case string:
 		return "string"
 	case bool:
@@ -253,6 +268,63 @@ func equalityLiteralKind(value interface{}) string {
 	default:
 		return ""
 	}
+}
+
+func equalityLiteralsStrictEqual(left, right interface{}) bool {
+	leftKind := equalityLiteralKind(left)
+	rightKind := equalityLiteralKind(right)
+	if leftKind == "" || leftKind != rightKind {
+		return false
+	}
+
+	switch leftKind {
+	case "null":
+		return true
+	case "string":
+		leftValue, leftOK := left.(string)
+		rightValue, rightOK := right.(string)
+		return leftOK && rightOK && leftValue == rightValue
+	case "boolean":
+		leftValue, leftOK := left.(bool)
+		rightValue, rightOK := right.(bool)
+		return leftOK && rightOK && leftValue == rightValue
+	case "number":
+		leftNumber, leftHandled, leftValid := jsNumberFromLiteral(left)
+		rightNumber, rightHandled, rightValid := jsNumberFromLiteral(right)
+		return leftHandled && rightHandled && leftValid && rightValid && leftNumber.float == rightNumber.float
+	default:
+		return false
+	}
+}
+
+func equalityLiteralsLooseEqual(left, right interface{}) bool {
+	leftKind := equalityLiteralKind(left)
+	rightKind := equalityLiteralKind(right)
+	if leftKind == "" || rightKind == "" {
+		return true
+	}
+	if leftKind == "null" || rightKind == "null" {
+		return leftKind == "null" && rightKind == "null"
+	}
+	if leftKind == rightKind {
+		return equalityLiteralsStrictEqual(left, right)
+	}
+	if leftKind == "boolean" || rightKind == "boolean" ||
+		(leftKind == "number" && rightKind == "string") ||
+		(leftKind == "string" && rightKind == "number") {
+		leftNumber, leftHandled, leftValid := jsNumberFromLiteral(left)
+		rightNumber, rightHandled, rightValid := jsNumberFromLiteral(right)
+		return leftHandled && rightHandled && leftValid && rightValid && leftNumber.float == rightNumber.float
+	}
+	return false
+}
+
+func (operand equalityFieldOperand) defaultCanStrictEqual(literal interface{}) bool {
+	return !operand.defaultLiteralKnown || equalityLiteralsStrictEqual(operand.defaultLiteral, literal)
+}
+
+func (operand equalityFieldOperand) defaultCanLooseEqual(literal interface{}) bool {
+	return !operand.defaultLiteralKnown || equalityLiteralsLooseEqual(operand.defaultLiteral, literal)
 }
 
 func hasRadixPrefix(s string) bool {
@@ -579,20 +651,21 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 		return dec
 	}
 
-	leftFieldName := c.extractEqualityFieldName(leftArg)
-	rightFieldName := c.extractEqualityFieldName(rightArg)
-	if (leftFieldName == "") == (rightFieldName == "") {
+	leftField, leftIsField := c.extractEqualityFieldOperand(leftArg)
+	rightField, rightIsField := c.extractEqualityFieldOperand(rightArg)
+	if leftIsField == rightIsField {
 		return dec
 	}
 
-	fieldName := leftFieldName
+	field := leftField
 	literalArg := rightArg
 	fieldOnLeft := true
-	if fieldName == "" {
-		fieldName = rightFieldName
+	if !leftIsField {
+		field = rightField
 		literalArg = leftArg
 		fieldOnLeft = false
 	}
+	fieldName := field.fieldName
 
 	literal, ok := equalityLiteralValue(literalArg)
 	if !ok || literal == nil {
@@ -605,26 +678,49 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 	}
 	if err := c.schema().ValidateField(fieldName); err != nil {
 		dec.unsupported = err
+		dec.handled = true
 		return dec
+	}
+	dec.handled = true
+
+	if field.hasDefault {
+		if c.schema().IsEnumType(fieldName) && field.defaultLiteralKnown {
+			if err := c.validateEnumValue(field.defaultLiteral, fieldName); err != nil {
+				dec.unsupported = err
+				return dec
+			}
+		}
 	}
 
 	if isStrictEqualityOperator(operator) {
 		literalKind := equalityLiteralKind(literal)
 		if literalKind != "" && literalKind != fieldKind {
+			if field.hasDefault && field.defaultCanStrictEqual(literal) {
+				return dec
+			}
 			dec.constant = impossibleEqualityPredicateConstant(operator)
 			return dec
 		}
 		if fieldKind == "number" && c.schema().GetFieldType(fieldName) == "integer" {
 			if jsonNumberIntegerOutsideInt64(literal) {
+				if field.hasDefault && field.defaultCanStrictEqual(literal) {
+					return dec
+				}
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec
 			}
 			if n, handled, valid := jsNumberFromLiteral(literal); handled {
 				if !valid || !n.integral {
+					if field.hasDefault && field.defaultCanStrictEqual(literal) {
+						return dec
+					}
 					dec.constant = impossibleEqualityPredicateConstant(operator)
 					return dec
 				}
 				if _, ok := int64FromJSNumber(n); !ok {
+					if field.hasDefault && field.defaultCanStrictEqual(literal) {
+						return dec
+					}
 					dec.constant = impossibleEqualityPredicateConstant(operator)
 					return dec
 				}
@@ -648,21 +744,33 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if !valid {
+			if field.hasDefault && field.defaultCanLooseEqual(literal) {
+				return dec
+			}
 			dec.constant = impossibleEqualityPredicateConstant(operator)
 			return dec
 		}
 		value := n.value
 		if c.schema().GetFieldType(fieldName) == "integer" {
 			if jsonNumberIntegerOutsideInt64(literal) {
+				if field.hasDefault && field.defaultCanLooseEqual(literal) {
+					return dec
+				}
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec
 			}
 			if !n.integral {
+				if field.hasDefault && field.defaultCanLooseEqual(literal) {
+					return dec
+				}
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec
 			}
 			i, ok := int64FromJSNumber(n)
 			if !ok {
+				if field.hasDefault && field.defaultCanLooseEqual(literal) {
+					return dec
+				}
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec
 			}
@@ -675,6 +783,9 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if !valid {
+			if field.hasDefault && field.defaultCanLooseEqual(literal) {
+				return dec
+			}
 			dec.constant = impossibleEqualityPredicateConstant(operator)
 			return dec
 		}
@@ -684,6 +795,9 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 		case 1:
 			c.setLiteralForFieldSide(&dec, fieldOnLeft, true)
 		default:
+			if field.hasDefault && field.defaultCanLooseEqual(literal) {
+				return dec
+			}
 			dec.constant = impossibleEqualityPredicateConstant(operator)
 		}
 	case "string":
@@ -714,6 +828,25 @@ func equalityLiteralForFieldSide(dec equalityDecision, fieldOnLeft bool) interfa
 		return dec.right
 	}
 	return dec.left
+}
+
+func (c *ComparisonOperator) applySchemaComparisonCoercion(leftArg, rightArg interface{}) (interface{}, interface{}, error) {
+	leftFieldName := c.extractFieldNameFromValue(leftArg)
+	rightFieldName := c.extractFieldNameFromValue(rightArg)
+
+	if leftFieldName != "" && rightFieldName == "" {
+		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
+		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+			return nil, nil, err
+		}
+	}
+	if rightFieldName != "" && leftFieldName == "" {
+		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
+		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
+			return nil, nil, err
+		}
+	}
+	return leftArg, rightArg, nil
 }
 
 // coerceValueForComparison coerces a literal value based on the type of the field being compared.
@@ -837,9 +970,6 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 	leftArg := args[0]
 	rightArg := args[1]
 
-	leftFieldName := c.extractFieldNameFromValue(leftArg)
-	rightFieldName := c.extractFieldNameFromValue(rightArg)
-
 	if isEqualityOperator(operator) {
 		decision := c.applyEqualitySemantics(operator, leftArg, rightArg)
 		if decision.unsupported != nil {
@@ -848,24 +978,21 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 		if decision.constant != nil {
 			return boolSQL(*decision.constant), nil
 		}
-		leftArg = decision.left
-		rightArg = decision.right
-	} else {
-		// If left is a field and right is a literal, coerce right based on left's type
-		if leftFieldName != "" && rightFieldName == "" {
-			rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
-			// Validate enum value if left is an enum field
-			if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+		if decision.handled {
+			leftArg = decision.left
+			rightArg = decision.right
+		} else {
+			var err error
+			leftArg, rightArg, err = c.applySchemaComparisonCoercion(leftArg, rightArg)
+			if err != nil {
 				return "", err
 			}
 		}
-		// If right is a field and left is a literal, coerce left based on right's type
-		if rightFieldName != "" && leftFieldName == "" {
-			leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
-			// Validate enum value if right is an enum field
-			if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
-				return "", err
-			}
+	} else {
+		var err error
+		leftArg, rightArg, err = c.applySchemaComparisonCoercion(leftArg, rightArg)
+		if err != nil {
+			return "", err
 		}
 	}
 
@@ -1430,9 +1557,6 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 	leftArg := args[0]
 	rightArg := args[1]
 
-	leftFieldName := c.extractFieldNameFromValue(leftArg)
-	rightFieldName := c.extractFieldNameFromValue(rightArg)
-
 	if isEqualityOperator(operator) {
 		decision := c.applyEqualitySemantics(operator, leftArg, rightArg)
 		if decision.unsupported != nil {
@@ -1441,20 +1565,21 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 		if decision.constant != nil {
 			return boolSQL(*decision.constant), nil
 		}
-		leftArg = decision.left
-		rightArg = decision.right
-	} else {
-		if leftFieldName != "" && rightFieldName == "" {
-			rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
-			if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+		if decision.handled {
+			leftArg = decision.left
+			rightArg = decision.right
+		} else {
+			var err error
+			leftArg, rightArg, err = c.applySchemaComparisonCoercion(leftArg, rightArg)
+			if err != nil {
 				return "", err
 			}
 		}
-		if rightFieldName != "" && leftFieldName == "" {
-			leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
-			if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
-				return "", err
-			}
+	} else {
+		var err error
+		leftArg, rightArg, err = c.applySchemaComparisonCoercion(leftArg, rightArg)
+		if err != nil {
+			return "", err
 		}
 	}
 

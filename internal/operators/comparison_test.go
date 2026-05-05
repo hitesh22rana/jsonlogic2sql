@@ -925,6 +925,72 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			wantSQL:  "COALESCE(amount, 'abc') = 'abc'",
 		},
 		{
+			name:     "defaulted numeric var coerces numeric string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "50"},
+			wantSQL:  "COALESCE(amount, 0) = 50",
+		},
+		{
+			name:     "defaulted numeric var coerces numeric string with field on right",
+			operator: "==",
+			args:     []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:  "50 = COALESCE(amount, 0)",
+		},
+		{
+			name:     "defaulted numeric var invalid string folds false when default cannot match",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "abc"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "defaulted numeric var invalid string folds false with field on right when default cannot match",
+			operator: "==",
+			args:     []interface{}{"abc", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "defaulted strict numeric mismatch folds false when default cannot match",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "50"},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "defaulted strict numeric mismatch folds false with field on right when default cannot match",
+			operator: "===",
+			args:     []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "defaulted strict numeric mismatch preserves expression when default can match",
+			operator: "===",
+			args:     []interface{}{map[string]interface{}{"var": []interface{}{"amount", "50"}}, "50"},
+			wantSQL:  "COALESCE(amount, '50') = '50'",
+		},
+		{
+			name:     "defaulted strict numeric mismatch preserves expression with field on right when default can match",
+			operator: "===",
+			args:     []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", "50"}}},
+			wantSQL:  "'50' = COALESCE(amount, '50')",
+		},
+		{
+			name:      "defaulted string field boolean literal errors",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"code", ""}}, true},
+			wantError: true,
+		},
+		{
+			name:      "defaulted string field boolean literal errors with field on right",
+			operator:  "==",
+			args:      []interface{}{true, map[string]interface{}{"var": []interface{}{"code", ""}}},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, "active"},
+			wantError: true,
+		},
+		{
 			name:     "numeric field invalid string folds true for not equal",
 			operator: "!=",
 			args:     []interface{}{map[string]interface{}{"var": "amount"}, "abc"},
@@ -2925,7 +2991,9 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 		"score":  "number",
 		"active": "boolean",
 		"code":   "string",
+		"status": "enum",
 	})
+	schema.enumValues["status"] = []string{"active", "1"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -2964,6 +3032,80 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", "abc"}}, "abc"},
 			wantSQL:    "COALESCE(amount, @p1) = @p2",
 			wantParams: []params.QueryParam{{Name: "p1", Value: "abc"}, {Name: "p2", Value: "abc"}},
+		},
+		{
+			name:       "defaulted numeric var coerces numeric string",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "50"},
+			wantSQL:    "COALESCE(amount, @p1) = @p2",
+			wantParams: []params.QueryParam{{Name: "p1", Value: 0}, {Name: "p2", Value: int64(50)}},
+		},
+		{
+			name:       "defaulted numeric var coerces numeric string with field on right",
+			operator:   "==",
+			args:       []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:    "@p1 = COALESCE(amount, @p2)",
+			wantParams: []params.QueryParam{{Name: "p1", Value: int64(50)}, {Name: "p2", Value: 0}},
+		},
+		{
+			name:       "defaulted numeric var invalid string folds without params when default cannot match",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "abc"},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "defaulted numeric var invalid string folds without params with field on right when default cannot match",
+			operator:   "==",
+			args:       []interface{}{"abc", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "defaulted strict numeric mismatch folds without params when default cannot match",
+			operator:   "===",
+			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", 0}}, "50"},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "defaulted strict numeric mismatch folds without params with field on right when default cannot match",
+			operator:   "===",
+			args:       []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", 0}}},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "defaulted strict numeric mismatch preserves params when default can match",
+			operator:   "===",
+			args:       []interface{}{map[string]interface{}{"var": []interface{}{"amount", "50"}}, "50"},
+			wantSQL:    "COALESCE(amount, @p1) = @p2",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "50"}, {Name: "p2", Value: "50"}},
+		},
+		{
+			name:       "defaulted strict numeric mismatch preserves params with field on right when default can match",
+			operator:   "===",
+			args:       []interface{}{"50", map[string]interface{}{"var": []interface{}{"amount", "50"}}},
+			wantSQL:    "@p1 = COALESCE(amount, @p2)",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "50"}, {Name: "p2", Value: "50"}},
+		},
+		{
+			name:      "defaulted string field boolean literal errors",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"code", ""}}, true},
+			wantError: true,
+		},
+		{
+			name:      "defaulted string field boolean literal errors with field on right",
+			operator:  "==",
+			args:      []interface{}{true, map[string]interface{}{"var": []interface{}{"code", ""}}},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, "active"},
+			wantError: true,
 		},
 		{
 			name:       "numeric above int64 range folds without params",
