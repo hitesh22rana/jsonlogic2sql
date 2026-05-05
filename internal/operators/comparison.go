@@ -3,6 +3,7 @@ package operators
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,19 @@ import (
 type ComparisonOperator struct {
 	config *OperatorConfig
 	dataOp *DataOperator
+}
+
+type equalityDecision struct {
+	left        interface{}
+	right       interface{}
+	constant    *bool
+	unsupported error
+}
+
+type jsNumberLiteral struct {
+	value    interface{}
+	float    float64
+	integral bool
 }
 
 // NewComparisonOperator creates a new comparison operator with optional config.
@@ -127,6 +141,379 @@ func (c *ComparisonOperator) extractFieldName(varName interface{}) string {
 		}
 	}
 	return ""
+}
+
+func isEqualityOperator(operator string) bool {
+	return operator == "==" || operator == "===" || operator == "!=" || operator == "!=="
+}
+
+func isStrictEqualityOperator(operator string) bool {
+	return operator == "===" || operator == "!=="
+}
+
+func impossibleEqualityPredicateConstant(operator string) *bool {
+	result := operator == "!=" || operator == "!=="
+
+	return &result
+}
+
+func boolSQL(value bool) string {
+	if value {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+func equalityLiteralValue(value interface{}) (interface{}, bool) {
+	if pv, ok := value.(ProcessedValue); ok {
+		if pv.IsSQL {
+			return nil, false
+		}
+		return pv.Value, true
+	}
+
+	switch value.(type) {
+	case map[string]interface{}, []interface{}:
+		return nil, false
+	default:
+		return value, true
+	}
+}
+
+func equalityLiteralKind(value interface{}) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case json.Number, float32, float64,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return "number"
+	default:
+		return ""
+	}
+}
+
+func hasRadixPrefix(s string) bool {
+	if len(s) < 2 || s[0] != '0' {
+		return false
+	}
+	switch s[1] {
+	case 'x', 'X', 'o', 'O', 'b', 'B':
+		return true
+	default:
+		return false
+	}
+}
+
+func radixBase(prefix byte) int {
+	switch prefix {
+	case 'x', 'X':
+		return 16
+	case 'o', 'O':
+		return 8
+	case 'b', 'B':
+		return 2
+	default:
+		return 10
+	}
+}
+
+func validRadixDigits(s string, base int) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			if int(r-'0') >= base {
+				return false
+			}
+		case base == 16 && r >= 'a' && r <= 'f':
+		case base == 16 && r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func jsNumberFromString(input string) (jsNumberLiteral, bool) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return newJSIntNumber(0), true
+	}
+
+	if s[0] == '+' || s[0] == '-' {
+		remainder := s[1:]
+		if hasRadixPrefix(remainder) {
+			return jsNumberLiteral{}, false
+		}
+	} else if hasRadixPrefix(s) {
+		base := radixBase(s[1])
+		digits := s[2:]
+		if !validRadixDigits(digits, base) {
+			return jsNumberLiteral{}, false
+		}
+		i, err := strconv.ParseInt(digits, base, 64)
+		if err != nil {
+			return jsNumberLiteral{}, false
+		}
+		return newJSIntNumber(i), true
+	}
+
+	if strings.Contains(s, "_") {
+		return jsNumberLiteral{}, false
+	}
+
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return newJSIntNumber(i), true
+	}
+
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return jsNumberLiteral{}, false
+	}
+	return newJSFloatNumber(f), true
+}
+
+func newJSIntNumber(i int64) jsNumberLiteral {
+	return jsNumberLiteral{
+		value:    i,
+		float:    float64(i),
+		integral: true,
+	}
+}
+
+func newJSFloatNumber(f float64) jsNumberLiteral {
+	return jsNumberLiteral{
+		value:    f,
+		float:    f,
+		integral: math.Trunc(f) == f,
+	}
+}
+
+func jsNumberFromLiteral(value interface{}) (jsNumberLiteral, bool, bool) {
+	switch v := value.(type) {
+	case string:
+		n, ok := jsNumberFromString(v)
+		return n, true, ok
+	case bool:
+		if v {
+			return newJSIntNumber(1), true, true
+		}
+		return newJSIntNumber(0), true, true
+	case json.Number:
+		if _, err := normalizeJSONNumberLiteral(v); err != nil {
+			return jsNumberLiteral{}, false, false
+		}
+		numStr := v.String()
+		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			return newJSIntNumber(i), true, true
+		}
+		f, err := strconv.ParseFloat(numStr, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return jsNumberLiteral{}, true, false
+		}
+		return newJSFloatNumber(f), true, true
+	case float32:
+		f := float64(v)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return jsNumberLiteral{}, true, false
+		}
+		return newJSFloatNumber(f), true, true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return jsNumberLiteral{}, true, false
+		}
+		return newJSFloatNumber(v), true, true
+	case int:
+		return newJSIntNumber(int64(v)), true, true
+	case int8:
+		return newJSIntNumber(int64(v)), true, true
+	case int16:
+		return newJSIntNumber(int64(v)), true, true
+	case int32:
+		return newJSIntNumber(int64(v)), true, true
+	case int64:
+		return newJSIntNumber(v), true, true
+	case uint:
+		return newJSFloatNumber(float64(v)), true, true
+	case uint8:
+		return newJSIntNumber(int64(v)), true, true
+	case uint16:
+		return newJSIntNumber(int64(v)), true, true
+	case uint32:
+		return newJSIntNumber(int64(v)), true, true
+	case uint64:
+		if v <= math.MaxInt64 {
+			return newJSIntNumber(int64(v)), true, true
+		}
+		return newJSFloatNumber(float64(v)), true, true
+	default:
+		return jsNumberLiteral{}, false, false
+	}
+}
+
+func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
+	if !n.integral || n.float < float64(math.MinInt64) || n.float > float64(math.MaxInt64) {
+		return 0, false
+	}
+	return int64(n.float), true
+}
+
+func jsNumberToCanonicalString(n jsNumberLiteral) string {
+	if i, ok := n.value.(int64); ok {
+		return strconv.FormatInt(i, 10)
+	}
+	if n.integral {
+		if i, ok := int64FromJSNumber(n); ok {
+			return strconv.FormatInt(i, 10)
+		}
+	}
+	return strconv.FormatFloat(n.float, 'g', -1, 64)
+}
+
+func (c *ComparisonOperator) fieldEqualityKind(fieldName string) string {
+	if c.schema() == nil || fieldName == "" {
+		return ""
+	}
+	switch {
+	case c.schema().IsNumericType(fieldName):
+		return "number"
+	case c.schema().IsBooleanType(fieldName):
+		return "boolean"
+	case c.schema().IsStringType(fieldName), c.schema().IsEnumType(fieldName):
+		return "string"
+	default:
+		return ""
+	}
+}
+
+func (c *ComparisonOperator) setLiteralForFieldSide(dec *equalityDecision, fieldOnLeft bool, value interface{}) {
+	if fieldOnLeft {
+		dec.right = value
+		return
+	}
+	dec.left = value
+}
+
+func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, rightArg interface{}) equalityDecision {
+	dec := equalityDecision{left: leftArg, right: rightArg}
+	if c.schema() == nil || !isEqualityOperator(operator) {
+		return dec
+	}
+
+	leftFieldName := c.extractFieldNameFromValue(leftArg)
+	rightFieldName := c.extractFieldNameFromValue(rightArg)
+	if (leftFieldName == "") == (rightFieldName == "") {
+		return dec
+	}
+
+	fieldName := leftFieldName
+	literalArg := rightArg
+	fieldOnLeft := true
+	if fieldName == "" {
+		fieldName = rightFieldName
+		literalArg = leftArg
+		fieldOnLeft = false
+	}
+
+	literal, ok := equalityLiteralValue(literalArg)
+	if !ok || literal == nil {
+		return dec
+	}
+
+	fieldKind := c.fieldEqualityKind(fieldName)
+	if fieldKind == "" {
+		return dec
+	}
+
+	if isStrictEqualityOperator(operator) {
+		literalKind := equalityLiteralKind(literal)
+		if literalKind != "" && literalKind != fieldKind {
+			dec.constant = impossibleEqualityPredicateConstant(operator)
+			return dec
+		}
+		if fieldKind == "number" && c.schema().GetFieldType(fieldName) == "integer" {
+			if n, handled, valid := jsNumberFromLiteral(literal); handled && valid && !n.integral {
+				dec.constant = impossibleEqualityPredicateConstant(operator)
+				return dec
+			}
+		}
+		if err := c.validateEnumValue(literal, fieldName); err != nil {
+			dec.unsupported = err
+		}
+		return dec
+	}
+
+	switch fieldKind {
+	case "number":
+		n, handled, valid := jsNumberFromLiteral(literal)
+		if !handled {
+			return dec
+		}
+		if !valid {
+			dec.constant = impossibleEqualityPredicateConstant(operator)
+			return dec
+		}
+		value := n.value
+		if c.schema().GetFieldType(fieldName) == "integer" {
+			if !n.integral {
+				dec.constant = impossibleEqualityPredicateConstant(operator)
+				return dec
+			}
+			if i, ok := int64FromJSNumber(n); ok {
+				value = i
+			}
+		}
+		c.setLiteralForFieldSide(&dec, fieldOnLeft, value)
+	case "boolean":
+		n, handled, valid := jsNumberFromLiteral(literal)
+		if !handled {
+			return dec
+		}
+		if !valid {
+			dec.constant = impossibleEqualityPredicateConstant(operator)
+			return dec
+		}
+		switch n.float {
+		case 0:
+			c.setLiteralForFieldSide(&dec, fieldOnLeft, false)
+		case 1:
+			c.setLiteralForFieldSide(&dec, fieldOnLeft, true)
+		default:
+			dec.constant = impossibleEqualityPredicateConstant(operator)
+		}
+	case "string":
+		if _, ok := literal.(bool); ok {
+			dec.unsupported = fmt.Errorf(
+				"loose equality between string field %q and boolean literal is not supported", fieldName)
+			return dec
+		}
+		if equalityLiteralKind(literal) == "number" {
+			if n, handled, valid := jsNumberFromLiteral(literal); handled {
+				if !valid {
+					dec.constant = impossibleEqualityPredicateConstant(operator)
+					return dec
+				}
+				c.setLiteralForFieldSide(&dec, fieldOnLeft, jsNumberToCanonicalString(n))
+			}
+		}
+		if err := c.validateEnumValue(equalityLiteralForFieldSide(dec, fieldOnLeft), fieldName); err != nil {
+			dec.unsupported = err
+		}
+	}
+
+	return dec
+}
+
+func equalityLiteralForFieldSide(dec equalityDecision, fieldOnLeft bool) interface{} {
+	if fieldOnLeft {
+		return dec.right
+	}
+	return dec.left
 }
 
 // coerceValueForComparison coerces a literal value based on the type of the field being compared.
@@ -253,20 +640,32 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 	leftFieldName := c.extractFieldNameFromValue(leftArg)
 	rightFieldName := c.extractFieldNameFromValue(rightArg)
 
-	// If left is a field and right is a literal, coerce right based on left's type
-	if leftFieldName != "" && rightFieldName == "" {
-		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
-		// Validate enum value if left is an enum field
-		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
-			return "", err
+	if isEqualityOperator(operator) {
+		decision := c.applyEqualitySemantics(operator, leftArg, rightArg)
+		if decision.unsupported != nil {
+			return "", decision.unsupported
 		}
-	}
-	// If right is a field and left is a literal, coerce left based on right's type
-	if rightFieldName != "" && leftFieldName == "" {
-		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
-		// Validate enum value if right is an enum field
-		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
-			return "", err
+		if decision.constant != nil {
+			return boolSQL(*decision.constant), nil
+		}
+		leftArg = decision.left
+		rightArg = decision.right
+	} else {
+		// If left is a field and right is a literal, coerce right based on left's type
+		if leftFieldName != "" && rightFieldName == "" {
+			rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
+			// Validate enum value if left is an enum field
+			if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+				return "", err
+			}
+		}
+		// If right is a field and left is a literal, coerce left based on right's type
+		if rightFieldName != "" && leftFieldName == "" {
+			leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
+			// Validate enum value if right is an enum field
+			if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -850,16 +1249,28 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 	leftFieldName := c.extractFieldNameFromValue(leftArg)
 	rightFieldName := c.extractFieldNameFromValue(rightArg)
 
-	if leftFieldName != "" && rightFieldName == "" {
-		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
-		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
-			return "", err
+	if isEqualityOperator(operator) {
+		decision := c.applyEqualitySemantics(operator, leftArg, rightArg)
+		if decision.unsupported != nil {
+			return "", decision.unsupported
 		}
-	}
-	if rightFieldName != "" && leftFieldName == "" {
-		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
-		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
-			return "", err
+		if decision.constant != nil {
+			return boolSQL(*decision.constant), nil
+		}
+		leftArg = decision.left
+		rightArg = decision.right
+	} else {
+		if leftFieldName != "" && rightFieldName == "" {
+			rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
+			if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
+				return "", err
+			}
+		}
+		if rightFieldName != "" && leftFieldName == "" {
+			leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
+			if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
+				return "", err
+			}
 		}
 	}
 
