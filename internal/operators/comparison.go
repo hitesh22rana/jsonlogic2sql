@@ -680,6 +680,25 @@ func (c *ComparisonOperator) setLiteralForFieldSide(dec *equalityDecision, field
 	dec.left = value
 }
 
+func (c *ComparisonOperator) validateEqualityFieldOperand(field equalityFieldOperand) error {
+	if c.schema() == nil || field.fieldName == "" {
+		return nil
+	}
+	if err := c.schema().ValidateField(field.fieldName); err != nil {
+		return err
+	}
+	if !field.hasDefault || !field.defaultLiteralKnown {
+		return nil
+	}
+	if err := validateEqualityJSONNumberLiteral(field.defaultLiteral); err != nil {
+		return err
+	}
+	if c.schema().IsEnumType(field.fieldName) {
+		return c.validateEnumValue(field.defaultLiteral, field.fieldName)
+	}
+	return nil
+}
+
 func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, rightArg interface{}) equalityDecision {
 	dec := equalityDecision{left: leftArg, right: rightArg}
 	if c.schema() == nil || !isEqualityOperator(operator) {
@@ -688,6 +707,20 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 
 	leftField, leftIsField := c.extractEqualityFieldOperand(leftArg)
 	rightField, rightIsField := c.extractEqualityFieldOperand(rightArg)
+	if leftIsField {
+		if err := c.validateEqualityFieldOperand(leftField); err != nil {
+			dec.unsupported = err
+			dec.handled = true
+			return dec
+		}
+	}
+	if rightIsField {
+		if err := c.validateEqualityFieldOperand(rightField); err != nil {
+			dec.unsupported = err
+			dec.handled = true
+			return dec
+		}
+	}
 	if leftIsField == rightIsField {
 		return dec
 	}
@@ -711,31 +744,11 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 	if fieldKind == "" {
 		return dec
 	}
-	if err := c.schema().ValidateField(fieldName); err != nil {
-		dec.unsupported = err
-		dec.handled = true
-		return dec
-	}
 	dec.handled = true
 
 	if err := validateEqualityJSONNumberLiteral(literal); err != nil {
 		dec.unsupported = err
 		return dec
-	}
-
-	if field.hasDefault {
-		if field.defaultLiteralKnown {
-			if err := validateEqualityJSONNumberLiteral(field.defaultLiteral); err != nil {
-				dec.unsupported = err
-				return dec
-			}
-		}
-		if c.schema().IsEnumType(fieldName) && field.defaultLiteralKnown {
-			if err := c.validateEnumValue(field.defaultLiteral, fieldName); err != nil {
-				dec.unsupported = err
-				return dec
-			}
-		}
 	}
 
 	if literal == nil {

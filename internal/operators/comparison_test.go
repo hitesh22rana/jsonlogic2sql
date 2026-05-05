@@ -863,6 +863,7 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 		"score":  "number",
 		"active": "boolean",
 		"code":   "string",
+		"other":  "string",
 		"status": "enum",
 	})
 	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
@@ -1013,6 +1014,24 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
 			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default with var on right",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, map[string]interface{}{"var": "other"}},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default with var on left",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "other"}, map[string]interface{}{"var": []interface{}{"status", "unknown"}}},
+			wantError: true,
+		},
+		{
+			name:     "defaulted enum preserves valid default with var on right",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": []interface{}{"status", "active"}}, map[string]interface{}{"var": "other"}},
+			wantSQL:  "COALESCE(status, 'active') = other",
 		},
 		{
 			name:      "defaulted var malformed json number default errors before strict fold",
@@ -3027,6 +3046,7 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 		"score":  "number",
 		"active": "boolean",
 		"code":   "string",
+		"other":  "string",
 		"status": "enum",
 	})
 	schema.enumValues["status"] = []string{"active", "1", "9223372036854775807"}
@@ -3168,6 +3188,25 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			operator:  "==",
 			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, nil},
 			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default with var on right",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": []interface{}{"status", "unknown"}}, map[string]interface{}{"var": "other"}},
+			wantError: true,
+		},
+		{
+			name:      "defaulted enum validates visible default with var on left",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "other"}, map[string]interface{}{"var": []interface{}{"status", "unknown"}}},
+			wantError: true,
+		},
+		{
+			name:       "defaulted enum preserves valid default with var on right",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": []interface{}{"status", "active"}}, map[string]interface{}{"var": "other"}},
+			wantSQL:    "COALESCE(status, @p1) = other",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "active"}},
 		},
 		{
 			name:      "defaulted var malformed json number default errors before strict fold",

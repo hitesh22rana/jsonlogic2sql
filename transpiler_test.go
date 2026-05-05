@@ -361,6 +361,40 @@ func TestTranspileFromMap_SchemaEqualityRejectsInvalidJSONNumberBeforeFold(t *te
 	}
 }
 
+func TestTranspile_SchemaEqualityValidatesEnumDefaultsForVarOperands(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active"}},
+		{Name: "other", Type: FieldTypeString},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name  string
+		logic string
+	}{
+		{
+			name:  "invalid enum default on left var",
+			logic: `{"==":[{"var":["status","bogus"]},{"var":"other"}]}`,
+		},
+		{
+			name:  "invalid enum default on right var",
+			logic: `{"==":[{"var":"other"},{"var":["status","bogus"]}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tr.Transpile(tt.logic); err == nil {
+				t.Fatal("Transpile() expected error for invalid enum default")
+			}
+			if _, _, err := tr.TranspileParameterized(tt.logic); err == nil {
+				t.Fatal("TranspileParameterized() expected error for invalid enum default")
+			}
+		})
+	}
+}
+
 func TestTranspileFromMap_CustomOperatorRejectsInvalidJSONNumberLiterals(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 	_ = tr.RegisterOperatorFunc("identity", func(_ string, args []interface{}) (string, error) {
