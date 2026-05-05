@@ -96,6 +96,39 @@ WHERE status = 'active'
 WHERE count = 5
 ```
 
+With a schema, strict equality folds field/literal type mismatches that are
+known at transpile time:
+
+```json
+{"===": [{"var": "count"}, "5"]}
+```
+```sql
+WHERE FALSE
+```
+
+### Schema-Aware Equality Coercion
+
+When a schema is configured, equality and inequality use type-aware literal
+coercion where the JSONLogic behavior is portable SQL:
+
+- Numeric fields coerce known string and boolean literals through JavaScript-like
+  `ToNumber` semantics: `"010"` becomes `10`, `"0x10"` becomes `16`, `true`
+  becomes `1`, and non-numeric strings such as `"abc"` fold to `FALSE` for
+  `==`.
+- Boolean fields coerce known numeric and string literals through `ToNumber`,
+  then map `1` to `TRUE` and `0` to `FALSE`; any other finite number cannot
+  match a boolean field and folds to a constant.
+- String fields compared with numeric literals keep the canonical string match,
+  for example `code == 5` emits `code = '5'`.
+- Loose string/boolean field comparisons such as `code == true` return an error
+  because JSONLogic's runtime string coercion cannot be expressed portably in
+  SQL.
+
+The string/number case is intentionally canonical, not a complete JavaScript
+runtime model. `code == 5` matches `'5'`, but it does not also match strings
+that JavaScript would coerce to the same number, such as `'05'`, `'5.0'`, or
+`' 5 '`.
+
 ### Inequality
 
 ```json
