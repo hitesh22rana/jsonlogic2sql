@@ -143,6 +143,35 @@ func (c *ComparisonOperator) extractFieldName(varName interface{}) string {
 	return ""
 }
 
+// extractEqualityFieldName extracts only plain field references for schema-aware
+// equality rewrites. Array-form vars with defaults must keep their COALESCE
+// semantics, so they are intentionally excluded.
+func (c *ComparisonOperator) extractEqualityFieldName(value interface{}) string {
+	varExpr, ok := value.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if len(varExpr) != 1 {
+		return ""
+	}
+	varName, hasVar := varExpr[OpVar]
+	if !hasVar {
+		return ""
+	}
+	switch v := varName.(type) {
+	case string:
+		return v
+	case []interface{}:
+		if len(v) != 1 {
+			return ""
+		}
+		if name, ok := v[0].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
 func isEqualityOperator(operator string) bool {
 	return operator == "==" || operator == "===" || operator == "!=" || operator == "!=="
 }
@@ -157,11 +186,41 @@ func impossibleEqualityPredicateConstant(operator string) *bool {
 	return &result
 }
 
+func equalityPredicateConstant(operator string, left, right bool) bool {
+	switch operator {
+	case "==", "===":
+		return left == right
+	case "!=", "!==":
+		return left != right
+	default:
+		return false
+	}
+}
+
 func boolSQL(value bool) string {
 	if value {
 		return "TRUE"
 	}
 	return "FALSE"
+}
+
+func sqlBooleanConstant(sql string) (bool, bool) {
+	s := strings.TrimSpace(sql)
+	if len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		if inner == "TRUE" || inner == "FALSE" {
+			s = inner
+		}
+	}
+
+	switch s {
+	case "TRUE":
+		return true, true
+	case "FALSE":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func equalityLiteralValue(value interface{}) (interface{}, bool) {
@@ -357,22 +416,114 @@ func jsNumberFromLiteral(value interface{}) (jsNumberLiteral, bool, bool) {
 }
 
 func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
-	if !n.integral || n.float < float64(math.MinInt64) || n.float > float64(math.MaxInt64) {
+	if i, ok := n.value.(int64); ok {
+		return i, true
+	}
+	if !n.integral {
 		return 0, false
 	}
-	return int64(n.float), true
+
+	// float64(math.MaxInt64) rounds up to 2^63, so using math.MaxInt64 as
+	// a float bound can silently clamp MaxInt64+1 back to MaxInt64. Only
+	// convert float-origin values that are strictly inside the int64 range.
+	const (
+		minInt64Float = -9223372036854775808.0
+		maxInt64Float = 9223372036854775808.0
+	)
+	if n.float <= minInt64Float || n.float >= maxInt64Float {
+		return 0, false
+	}
+	i := int64(n.float)
+	if float64(i) != n.float {
+		return 0, false
+	}
+	return i, true
 }
 
 func jsNumberToCanonicalString(n jsNumberLiteral) string {
-	if i, ok := n.value.(int64); ok {
-		return strconv.FormatInt(i, 10)
+	return jsNumberFloatToString(n.float)
+}
+
+func jsNumberFloatToString(f float64) string {
+	if f == 0 {
+		return "0"
 	}
-	if n.integral {
-		if i, ok := int64FromJSNumber(n); ok {
-			return strconv.FormatInt(i, 10)
+
+	s := strconv.FormatFloat(f, 'g', -1, 64)
+	abs := math.Abs(f)
+	if abs >= 1e-6 && abs < 1e21 {
+		if strings.ContainsAny(s, "eE") {
+			if expanded, ok := expandScientificDecimal(s); ok {
+				return expanded
+			}
 		}
+		return s
 	}
-	return strconv.FormatFloat(n.float, 'g', -1, 64)
+	return normalizeExponentString(s)
+}
+
+func expandScientificDecimal(s string) (string, bool) {
+	expIndex := strings.IndexAny(s, "eE")
+	if expIndex < 0 {
+		return s, true
+	}
+
+	mantissa := s[:expIndex]
+	exp, err := strconv.Atoi(s[expIndex+1:])
+	if err != nil {
+		return "", false
+	}
+
+	sign := ""
+	if strings.HasPrefix(mantissa, "-") || strings.HasPrefix(mantissa, "+") {
+		if mantissa[0] == '-' {
+			sign = "-"
+		}
+		mantissa = mantissa[1:]
+	}
+
+	decimalPos := strings.IndexByte(mantissa, '.')
+	if decimalPos < 0 {
+		decimalPos = len(mantissa)
+	}
+	digits := strings.ReplaceAll(mantissa, ".", "")
+	newPos := decimalPos + exp
+
+	var result string
+	switch {
+	case newPos <= 0:
+		result = "0." + strings.Repeat("0", -newPos) + digits
+	case newPos >= len(digits):
+		result = digits + strings.Repeat("0", newPos-len(digits))
+	default:
+		result = digits[:newPos] + "." + digits[newPos:]
+		result = strings.TrimRight(result, "0")
+		result = strings.TrimRight(result, ".")
+	}
+
+	if result == "" || result == "0" {
+		return "0", true
+	}
+	return sign + result, true
+}
+
+func normalizeExponentString(s string) string {
+	expIndex := strings.IndexAny(s, "eE")
+	if expIndex < 0 {
+		return s
+	}
+
+	mantissa := s[:expIndex]
+	exp, err := strconv.Atoi(s[expIndex+1:])
+	if err != nil {
+		return s
+	}
+	sign := "+"
+	if exp < 0 {
+		sign = "-"
+		exp = -exp
+	}
+	return fmt.Sprintf("%se%s%d", mantissa, sign, exp)
 }
 
 func (c *ComparisonOperator) fieldEqualityKind(fieldName string) string {
@@ -405,8 +556,8 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 		return dec
 	}
 
-	leftFieldName := c.extractFieldNameFromValue(leftArg)
-	rightFieldName := c.extractFieldNameFromValue(rightArg)
+	leftFieldName := c.extractEqualityFieldName(leftArg)
+	rightFieldName := c.extractEqualityFieldName(rightArg)
 	if (leftFieldName == "") == (rightFieldName == "") {
 		return dec
 	}
@@ -437,9 +588,15 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if fieldKind == "number" && c.schema().GetFieldType(fieldName) == "integer" {
-			if n, handled, valid := jsNumberFromLiteral(literal); handled && valid && !n.integral {
-				dec.constant = impossibleEqualityPredicateConstant(operator)
-				return dec
+			if n, handled, valid := jsNumberFromLiteral(literal); handled {
+				if !valid || !n.integral {
+					dec.constant = impossibleEqualityPredicateConstant(operator)
+					return dec
+				}
+				if _, ok := int64FromJSNumber(n); !ok {
+					dec.constant = impossibleEqualityPredicateConstant(operator)
+					return dec
+				}
 			}
 		}
 		if err := c.validateEnumValue(literal, fieldName); err != nil {
@@ -464,9 +621,12 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 				dec.constant = impossibleEqualityPredicateConstant(operator)
 				return dec
 			}
-			if i, ok := int64FromJSNumber(n); ok {
-				value = i
+			i, ok := int64FromJSNumber(n)
+			if !ok {
+				dec.constant = impossibleEqualityPredicateConstant(operator)
+				return dec
 			}
+			value = i
 		}
 		c.setLiteralForFieldSide(&dec, fieldOnLeft, value)
 	case "boolean":
@@ -682,6 +842,14 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 	// Handle NULL comparisons - use IS NULL/IS NOT NULL instead of = NULL/!= NULL
 	isLeftNull := args[0] == nil || leftSQL == "NULL"
 	isRightNull := args[1] == nil || rightSQL == "NULL"
+
+	if isEqualityOperator(operator) && !isLeftNull && !isRightNull {
+		if leftBool, ok := sqlBooleanConstant(leftSQL); ok {
+			if rightBool, ok := sqlBooleanConstant(rightSQL); ok {
+				return boolSQL(equalityPredicateConstant(operator, leftBool, rightBool)), nil
+			}
+		}
+	}
 
 	switch operator {
 	case "==":
@@ -1163,38 +1331,14 @@ func (c *ComparisonOperator) processComparisonExpression(op string, args interfa
 		return "", fmt.Errorf("comparison operation requires exactly 2 arguments")
 	}
 
-	// Convert arguments to SQL
-	left, err := c.valueToSQL(argsSlice[0])
+	sql, err := c.ToSQL(op, argsSlice)
 	if err != nil {
-		return "", fmt.Errorf("invalid comparison left argument: %w", err)
+		return "", err
 	}
-
-	right, err := c.valueToSQL(argsSlice[1])
-	if err != nil {
-		return "", fmt.Errorf("invalid comparison right argument: %w", err)
+	if _, ok := sqlBooleanConstant(sql); ok {
+		return sql, nil
 	}
-
-	// Generate SQL based on operation
-	switch op {
-	case ">":
-		return fmt.Sprintf("(%s > %s)", left, right), nil
-	case ">=":
-		return fmt.Sprintf("(%s >= %s)", left, right), nil
-	case "<":
-		return fmt.Sprintf("(%s < %s)", left, right), nil
-	case "<=":
-		return fmt.Sprintf("(%s <= %s)", left, right), nil
-	case "==":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "===":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "!=":
-		return fmt.Sprintf("(%s != %s)", left, right), nil
-	case "!==":
-		return fmt.Sprintf("(%s <> %s)", left, right), nil
-	default:
-		return "", fmt.Errorf("unsupported comparison operation: %s", op)
-	}
+	return fmt.Sprintf("(%s)", sql), nil
 }
 
 // processMinMaxExpression handles min/max operations within comparison operations.
@@ -1286,6 +1430,14 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 
 	isLeftNull := args[0] == nil || leftSQL == "NULL"
 	isRightNull := args[1] == nil || rightSQL == "NULL"
+
+	if isEqualityOperator(operator) && !isLeftNull && !isRightNull {
+		if leftBool, ok := sqlBooleanConstant(leftSQL); ok {
+			if rightBool, ok := sqlBooleanConstant(rightSQL); ok {
+				return boolSQL(equalityPredicateConstant(operator, leftBool, rightBool)), nil
+			}
+		}
+	}
 
 	switch operator {
 	case "==":
@@ -1652,36 +1804,14 @@ func (c *ComparisonOperator) processComparisonExpressionParam(op string, args in
 		return "", fmt.Errorf("comparison operation requires exactly 2 arguments")
 	}
 
-	left, err := c.valueToSQLParam(argsSlice[0], pc)
+	sql, err := c.ToSQLParam(op, argsSlice, pc)
 	if err != nil {
-		return "", fmt.Errorf("invalid comparison left argument: %w", err)
+		return "", err
 	}
-
-	right, err := c.valueToSQLParam(argsSlice[1], pc)
-	if err != nil {
-		return "", fmt.Errorf("invalid comparison right argument: %w", err)
+	if _, ok := sqlBooleanConstant(sql); ok {
+		return sql, nil
 	}
-
-	switch op {
-	case ">":
-		return fmt.Sprintf("(%s > %s)", left, right), nil
-	case ">=":
-		return fmt.Sprintf("(%s >= %s)", left, right), nil
-	case "<":
-		return fmt.Sprintf("(%s < %s)", left, right), nil
-	case "<=":
-		return fmt.Sprintf("(%s <= %s)", left, right), nil
-	case "==":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "===":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "!=":
-		return fmt.Sprintf("(%s != %s)", left, right), nil
-	case "!==":
-		return fmt.Sprintf("(%s <> %s)", left, right), nil
-	default:
-		return "", fmt.Errorf("unsupported comparison operation: %s", op)
-	}
+	return fmt.Sprintf("(%s)", sql), nil
 }
 
 // processMinMaxExpressionParam is the parameterized variant of processMinMaxExpression. Keep in sync.
