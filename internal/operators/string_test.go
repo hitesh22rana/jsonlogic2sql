@@ -56,6 +56,27 @@ func TestStringOperator_ToSQL(t *testing.T) {
 			hasError: false,
 		},
 		{
+			name:     "cat preserves comparison if branches",
+			operator: "cat",
+			args: []interface{}{
+				map[string]interface{}{
+					"==": []interface{}{
+						map[string]interface{}{
+							"if": []interface{}{
+								map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+								"a",
+								map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "y"}, 0}},
+								"b",
+							},
+						},
+						"b",
+					},
+				},
+			},
+			expected: "CONCAT((CASE WHEN x > 0 THEN 'a' WHEN y < 0 THEN 'b' END = 'b'))",
+			hasError: false,
+		},
+		{
 			name:     "concatenation with no arguments",
 			operator: "cat",
 			args:     []interface{}{},
@@ -943,6 +964,40 @@ func TestStringOperator_processComparisonExpression(t *testing.T) {
 			hasError: false,
 		},
 		{
+			name:     "comparison preserves if branches on left operand",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{
+					"if": []interface{}{
+						map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+						"a",
+						map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "y"}, 0}},
+						"b",
+					},
+				},
+				"b",
+			},
+			expected: "(CASE WHEN x > 0 THEN 'a' WHEN y < 0 THEN 'b' END = 'b')",
+			hasError: false,
+		},
+		{
+			name:     "comparison preserves if branches on right operand",
+			operator: "==",
+			args: []interface{}{
+				"b",
+				map[string]interface{}{
+					"if": []interface{}{
+						map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+						"a",
+						map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "y"}, 0}},
+						"b",
+					},
+				},
+			},
+			expected: "('b' = CASE WHEN x > 0 THEN 'a' WHEN y < 0 THEN 'b' END)",
+			hasError: false,
+		},
+		{
 			name:     "wrong number of equality args",
 			operator: "==",
 			args:     []interface{}{1, 2, 3},
@@ -1016,6 +1071,43 @@ func TestStringOperator_ToSQLParam(t *testing.T) {
 			t.Errorf("SQL = %q, want %q", sql, wantSQL)
 		}
 		wantParams := []params.QueryParam{{Name: "p1", Value: "!"}}
+		if !reflect.DeepEqual(pc.Params(), wantParams) {
+			t.Errorf("Params = %#v, want %#v", pc.Params(), wantParams)
+		}
+	})
+
+	t.Run("cat preserves comparison if branches in parameterized mode", func(t *testing.T) {
+		op := NewStringOperator(nil)
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		sql, err := op.ToSQLParam("cat", []interface{}{
+			map[string]interface{}{
+				"==": []interface{}{
+					map[string]interface{}{
+						"if": []interface{}{
+							map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "x"}, 0}},
+							"a",
+							map[string]interface{}{"<": []interface{}{map[string]interface{}{"var": "y"}, 0}},
+							"b",
+						},
+					},
+					"b",
+				},
+			},
+		}, pc)
+		if err != nil {
+			t.Fatalf("ToSQLParam: %v", err)
+		}
+		wantSQL := "CONCAT((CASE WHEN x > @p1 THEN @p2 WHEN y < @p3 THEN @p4 END = @p5))"
+		if sql != wantSQL {
+			t.Errorf("SQL = %q, want %q", sql, wantSQL)
+		}
+		wantParams := []params.QueryParam{
+			{Name: "p1", Value: 0},
+			{Name: "p2", Value: "a"},
+			{Name: "p3", Value: 0},
+			{Name: "p4", Value: "b"},
+			{Name: "p5", Value: "b"},
+		}
 		if !reflect.DeepEqual(pc.Params(), wantParams) {
 			t.Errorf("Params = %#v, want %#v", pc.Params(), wantParams)
 		}
