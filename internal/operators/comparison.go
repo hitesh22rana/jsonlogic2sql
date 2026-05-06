@@ -609,6 +609,58 @@ func nativeFloat32LiteralString(value interface{}) (string, bool) {
 	return strconv.FormatFloat(f, 'g', -1, 32), true
 }
 
+func stringFieldNumericLiteralString(value interface{}) (string, bool, bool) {
+	if exact, ok := nativeIntegerLiteralString(value); ok {
+		return exact, true, true
+	}
+	if exact, ok := nativeFloat32LiteralString(value); ok {
+		return exact, true, true
+	}
+	if n, handled, valid := jsNumberFromLiteral(value); handled {
+		if valid {
+			return jsNumberToCanonicalString(n), true, true
+		}
+		if canonical, ok := invalidJSNumberStringForStringField(value); ok {
+			return canonical, true, true
+		}
+		return "", true, false
+	}
+	return "", false, false
+}
+
+func invalidJSNumberStringForStringField(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		if _, err := normalizeJSONNumberLiteral(v); err != nil {
+			return "", false
+		}
+		f, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil && !math.IsInf(f, 0) && f != 0 {
+			return "", false
+		}
+		return finiteOrInfiniteJSNumberString(f)
+	case float32:
+		return finiteOrInfiniteJSNumberString(float64(v))
+	case float64:
+		return finiteOrInfiniteJSNumberString(v)
+	default:
+		return "", false
+	}
+}
+
+func finiteOrInfiniteJSNumberString(f float64) (string, bool) {
+	switch {
+	case math.IsInf(f, 1):
+		return "Infinity", true
+	case math.IsInf(f, -1):
+		return "-Infinity", true
+	case math.IsNaN(f):
+		return "", false
+	default:
+		return jsNumberToCanonicalString(newJSFloatNumber(f)), true
+	}
+}
+
 func jsNumberFloatToString(f float64) string {
 	if f == 0 {
 		return "0"
@@ -913,16 +965,12 @@ func (c *ComparisonOperator) applyEqualitySemantics(operator string, leftArg, ri
 			return dec
 		}
 		if equalityLiteralKind(literal) == "number" {
-			if exact, ok := nativeIntegerLiteralString(literal); ok {
-				c.setLiteralForFieldSide(&dec, fieldOnLeft, exact)
-			} else if exact, ok := nativeFloat32LiteralString(literal); ok {
-				c.setLiteralForFieldSide(&dec, fieldOnLeft, exact)
-			} else if n, handled, valid := jsNumberFromLiteral(literal); handled {
-				if !valid {
+			if canonical, handled, possible := stringFieldNumericLiteralString(literal); handled {
+				if !possible {
 					dec.constant = impossibleEqualityPredicateConstant(operator)
 					return dec
 				}
-				c.setLiteralForFieldSide(&dec, fieldOnLeft, jsNumberToCanonicalString(n))
+				c.setLiteralForFieldSide(&dec, fieldOnLeft, canonical)
 			}
 		}
 		if err := c.validateEnumValue(equalityLiteralForFieldSide(dec, fieldOnLeft), fieldName); err != nil {

@@ -481,6 +481,65 @@ func TestTranspileFromInterface_SchemaNumberStrictEqualityFoldsNonFinite(t *test
 	}
 }
 
+func TestTranspile_SchemaStringEqualityCanonicalizesNonFiniteNumbers(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "code", Type: FieldTypeString},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"Infinity", "-Infinity"}},
+		{Name: "limited_status", Type: FieldTypeEnum, AllowedValues: []string{"active"}},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	jsonSQL, err := tr.Transpile(`{"==": [{"var": "code"}, 1e400]}`)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	if want := "WHERE code = 'Infinity'"; jsonSQL != want {
+		t.Fatalf("Transpile() SQL = %q, want %q", jsonSQL, want)
+	}
+
+	jsonParamSQL, jsonParams, err := tr.TranspileParameterized(`{"==": [{"var": "code"}, -1e400]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if want := "WHERE code = @p1"; jsonParamSQL != want {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", jsonParamSQL, want)
+	}
+	if want := []QueryParam{{Name: "p1", Value: "-Infinity"}}; !reflect.DeepEqual(jsonParams, want) {
+		t.Fatalf("TranspileParameterized() params = %v, want %v", jsonParams, want)
+	}
+
+	interfaceSQL, interfaceParams, err := tr.TranspileParameterizedFromInterface(map[string]interface{}{
+		"!=": []interface{}{map[string]interface{}{"var": "code"}, math.Inf(1)},
+	})
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+	}
+	if want := "WHERE code != @p1"; interfaceSQL != want {
+		t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", interfaceSQL, want)
+	}
+	if want := []QueryParam{{Name: "p1", Value: "Infinity"}}; !reflect.DeepEqual(interfaceParams, want) {
+		t.Fatalf("TranspileParameterizedFromInterface() params = %v, want %v", interfaceParams, want)
+	}
+
+	enumSQL, err := tr.TranspileFromInterface(map[string]interface{}{
+		"==": []interface{}{map[string]interface{}{"var": "status"}, math.Inf(1)},
+	})
+	if err != nil {
+		t.Fatalf("TranspileFromInterface() enum error = %v", err)
+	}
+	if want := "WHERE status = 'Infinity'"; enumSQL != want {
+		t.Fatalf("TranspileFromInterface() enum SQL = %q, want %q", enumSQL, want)
+	}
+
+	_, err = tr.TranspileFromInterface(map[string]interface{}{
+		"==": []interface{}{map[string]interface{}{"var": "limited_status"}, math.Inf(1)},
+	})
+	if err == nil {
+		t.Fatal("TranspileFromInterface() expected enum validation error")
+	}
+}
+
 func TestTranspileFromMap_CustomOperatorRejectsInvalidJSONNumberLiterals(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 	_ = tr.RegisterOperatorFunc("identity", func(_ string, args []interface{}) (string, error) {

@@ -860,14 +860,16 @@ func TestJSNumberFromString(t *testing.T) {
 
 func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 	schema := newComparisonSchemaProvider(map[string]string{
-		"amount": "integer",
-		"score":  "number",
-		"active": "boolean",
-		"code":   "string",
-		"other":  "string",
-		"status": "enum",
+		"amount":         "integer",
+		"score":          "number",
+		"active":         "boolean",
+		"code":           "string",
+		"other":          "string",
+		"status":         "enum",
+		"limited_status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807"}
+	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807", "Infinity", "-Infinity"}
+	schema.enumValues["limited_status"] = []string{"active"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -943,6 +945,54 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 			operator: "==",
 			args:     []interface{}{map[string]interface{}{"var": "status"}, float32(1.2)},
 			wantSQL:  "status = '1.2'",
+		},
+		{
+			name:     "string field json overflow canonicalizes infinity",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e400")},
+			wantSQL:  "code = 'Infinity'",
+		},
+		{
+			name:     "string field json overflow canonicalizes infinity for not equal",
+			operator: "!=",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e400")},
+			wantSQL:  "code != 'Infinity'",
+		},
+		{
+			name:     "string field json negative overflow canonicalizes negative infinity",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, json.Number("-1e400")},
+			wantSQL:  "code = '-Infinity'",
+		},
+		{
+			name:     "string field json underflow canonicalizes zero",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e-400")},
+			wantSQL:  "code = '0'",
+		},
+		{
+			name:     "string field native infinity canonicalizes",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, math.Inf(1)},
+			wantSQL:  "code = 'Infinity'",
+		},
+		{
+			name:     "string field native NaN still folds false",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "code"}, math.NaN()},
+			wantSQL:  "FALSE",
+		},
+		{
+			name:     "enum field validates infinity canonical string",
+			operator: "==",
+			args:     []interface{}{map[string]interface{}{"var": "status"}, math.Inf(1)},
+			wantSQL:  "status = 'Infinity'",
+		},
+		{
+			name:      "enum field rejects infinity canonical string",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "limited_status"}, math.Inf(1)},
+			wantError: true,
 		},
 		{
 			name:     "integer field preserves large uint64 literal within int64 range",
@@ -3097,14 +3147,16 @@ func TestComparisonOperator_ToSQLParam_WithSchemaCoercion(t *testing.T) {
 
 func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T) {
 	schema := newComparisonSchemaProvider(map[string]string{
-		"amount": "integer",
-		"score":  "number",
-		"active": "boolean",
-		"code":   "string",
-		"other":  "string",
-		"status": "enum",
+		"amount":         "integer",
+		"score":          "number",
+		"active":         "boolean",
+		"code":           "string",
+		"other":          "string",
+		"status":         "enum",
+		"limited_status": "enum",
 	})
-	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807"}
+	schema.enumValues["status"] = []string{"active", "1", "1.2", "9223372036854775807", "Infinity", "-Infinity"}
+	schema.enumValues["limited_status"] = []string{"active"}
 	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
 	op := NewComparisonOperator(config)
 
@@ -3164,6 +3216,61 @@ func TestComparisonOperator_ToSQLParam_EqualitySemanticsWithSchema(t *testing.T)
 			args:       []interface{}{map[string]interface{}{"var": "status"}, float32(1.2)},
 			wantSQL:    "status = @p1",
 			wantParams: []params.QueryParam{{Name: "p1", Value: "1.2"}},
+		},
+		{
+			name:       "string field json overflow canonicalizes infinity",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e400")},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "Infinity"}},
+		},
+		{
+			name:       "string field json overflow canonicalizes infinity for not equal",
+			operator:   "!=",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e400")},
+			wantSQL:    "code != @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "Infinity"}},
+		},
+		{
+			name:       "string field json negative overflow canonicalizes negative infinity",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, json.Number("-1e400")},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "-Infinity"}},
+		},
+		{
+			name:       "string field json underflow canonicalizes zero",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, json.Number("1e-400")},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "0"}},
+		},
+		{
+			name:       "string field native infinity canonicalizes",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, math.Inf(1)},
+			wantSQL:    "code = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "Infinity"}},
+		},
+		{
+			name:       "string field native NaN still folds without params",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "code"}, math.NaN()},
+			wantSQL:    "FALSE",
+			wantParams: nil,
+		},
+		{
+			name:       "enum field validates infinity canonical string",
+			operator:   "==",
+			args:       []interface{}{map[string]interface{}{"var": "status"}, math.Inf(1)},
+			wantSQL:    "status = @p1",
+			wantParams: []params.QueryParam{{Name: "p1", Value: "Infinity"}},
+		},
+		{
+			name:      "enum field rejects infinity canonical string",
+			operator:  "==",
+			args:      []interface{}{map[string]interface{}{"var": "limited_status"}, math.Inf(1)},
+			wantError: true,
 		},
 		{
 			name:       "integer field preserves large uint64 literal within int64 range",

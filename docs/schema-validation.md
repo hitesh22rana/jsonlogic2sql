@@ -239,6 +239,17 @@ _, err := transpiler.Transpile(`{"==": [{"var": "code"}, true]}`)
 // Error: loose equality between string field "code" and boolean literal is not supported
 ```
 
+For string and enum fields, numeric literals are converted to their canonical
+JavaScript string form before comparison. This includes non-finite JSON numeric
+values produced by overflow:
+
+```go
+// Schema: code is string type
+sql, _ := transpiler.Transpile(`{"==": [{"var": "code"}, 1e400]}`)
+fmt.Println(sql)
+// Output: WHERE code = 'Infinity'
+```
+
 **Defaulted Variables** - Equality and inequality apply the same schema-aware
 literal coercion to `[field, default]` vars while preserving the `COALESCE`
 expression emitted by the `var` operator:
