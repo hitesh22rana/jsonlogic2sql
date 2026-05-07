@@ -43,5 +43,6 @@ FINDINGS.md
 # Schema files (may contain sensitive field names)
 schema.json
 
-# Claude Code local memory
+# Agent local memory
 CLAUDE.md
+AGENTS.md
