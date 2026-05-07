@@ -50,6 +50,19 @@ func TestSQLResult(t *testing.T) {
 	}
 }
 
+func TestSQLFieldResult(t *testing.T) {
+	result := SQLFieldResult("elem.a")
+	if result.Value != "elem.a" {
+		t.Errorf("SQLFieldResult().Value = %q, want %q", result.Value, "elem.a")
+	}
+	if !result.IsSQL {
+		t.Error("SQLFieldResult().IsSQL = false, want true")
+	}
+	if !result.IsField {
+		t.Error("SQLFieldResult().IsField = false, want true")
+	}
+}
+
 func TestLiteralResult(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -156,6 +156,36 @@ WHERE deleted_at IS NULL
 WHERE field IS NOT NULL
 ```
 
+### Opt-In Null-Safe Field Equality
+
+By default, field-to-field equality uses ordinary SQL comparison:
+
+```json
+{"==": [{"var": "a"}, {"var": "b"}]}
+```
+```sql
+WHERE a = b
+```
+
+Set `NullSafeFieldEquality` or call `SetNullSafeFieldEquality(true)` to also
+match rows where both compared fields are `NULL`, matching JSONLogic's
+`null == null` and `null === null` behavior:
+
+```sql
+WHERE ((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))
+```
+
+For inequality, the opt-in fallback checks one-null-only rows plus the ordinary
+comparison:
+
+```sql
+WHERE ((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a != b))
+```
+
+This mode only applies when both operands are `var` expressions, including
+`[field, default]` vars. Comparisons such as `field == null` and field/literal
+schema coercion keep their existing SQL.
+
 ### Logical NOT
 
 ```json

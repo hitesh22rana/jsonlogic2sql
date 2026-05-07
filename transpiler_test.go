@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -18,6 +19,347 @@ func TestNewTranspiler(t *testing.T) {
 	}
 	if tr.parser == nil {
 		t.Fatal("parser is nil")
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality(t *testing.T) {
+	defaultTr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	defaultSQL, err := defaultTr.Transpile(`{"==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() default error = %v", err)
+	}
+	if defaultSQL != "WHERE a = b" {
+		t.Fatalf("Transpile() default = %q, want %q", defaultSQL, "WHERE a = b")
+	}
+
+	configTr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+	configSQL, err := configTr.Transpile(`{"==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() config error = %v", err)
+	}
+	if want := "WHERE ((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))"; configSQL != want {
+		t.Fatalf("Transpile() config = %q, want %q", configSQL, want)
+	}
+
+	setterTr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() setter error = %v", err)
+	}
+	setterTr.SetNullSafeFieldEquality(true)
+	if !setterTr.config.NullSafeFieldEquality || !setterTr.operatorConfig.NullSafeFieldEquality {
+		t.Fatal("SetNullSafeFieldEquality(true) did not update public and operator config")
+	}
+	setterSQL, err := setterTr.Transpile(`{"!==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() setter error = %v", err)
+	}
+	if want := "WHERE ((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a <> b))"; setterSQL != want {
+		t.Fatalf("Transpile() setter = %q, want %q", setterSQL, want)
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_AllDialects(t *testing.T) {
+	for _, d := range []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	} {
+		t.Run(d.String(), func(t *testing.T) {
+			tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect:               d,
+				NullSafeFieldEquality: true,
+			})
+			if err != nil {
+				t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+			}
+			got, err := tr.Transpile(`{"===": [{"var": "a"}, {"var": "b"}]}`)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if want := "WHERE ((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))"; got != want {
+				t.Fatalf("Transpile() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_DeeplyNested(t *testing.T) {
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+
+	logic := `{"and":[{"or":[{"===":[{"var":"a"},{"var":"b"}]},{"!=":[{"var":"c"},{"var":"d"}]}]},{"and":[{"==":[{"var":["e","left"]},{"var":["f","right"]}]},{">":[{"var":"score"},10]}]}]}`
+
+	got, err := tr.Transpile(logic)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	want := "WHERE (" +
+		"(((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b)) OR ((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR (c IS NOT NULL AND d IS NOT NULL AND c != d)))" +
+		" AND " +
+		"(((COALESCE(e, 'left') IS NULL AND COALESCE(f, 'right') IS NULL) OR (COALESCE(e, 'left') IS NOT NULL AND COALESCE(f, 'right') IS NOT NULL AND COALESCE(e, 'left') = COALESCE(f, 'right'))) AND score > 10)" +
+		")"
+	if got != want {
+		t.Fatalf("Transpile() = %q, want %q", got, want)
+	}
+
+	gotParamSQL, gotParams, err := tr.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	wantParamSQL := "WHERE (" +
+		"(((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b)) OR ((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR (c IS NOT NULL AND d IS NOT NULL AND c != d)))" +
+		" AND " +
+		"(((COALESCE(e, @p1) IS NULL AND COALESCE(f, @p2) IS NULL) OR (COALESCE(e, @p1) IS NOT NULL AND COALESCE(f, @p2) IS NOT NULL AND COALESCE(e, @p1) = COALESCE(f, @p2))) AND score > @p3)" +
+		")"
+	if gotParamSQL != wantParamSQL {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantParamSQL)
+	}
+	wantParams := []QueryParam{
+		{Name: "p1", Value: "left"},
+		{Name: "p2", Value: "right"},
+		{Name: "p3", Value: float64(10)},
+	}
+	if !reflect.DeepEqual(gotParams, wantParams) {
+		t.Fatalf("TranspileParameterized() params = %#v, want %#v", gotParams, wantParams)
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_ReviewRegressions(t *testing.T) {
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+
+	got, err := tr.Transpile(`{"!":{"==":[{"var":"a"},{"var":"b"}]}}`)
+	if err != nil {
+		t.Fatalf("Transpile() negated equality error = %v", err)
+	}
+	want := "WHERE NOT (((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b)))"
+	if got != want {
+		t.Fatalf("Transpile() negated equality = %q, want %q", got, want)
+	}
+
+	arrayLogic := `{"some":[{"var":"items"},{"==":[{"var":"current.a"},{"var":"current.b"}]}]}`
+	got, err = tr.Transpile(arrayLogic)
+	if err != nil {
+		t.Fatalf("Transpile() scoped array equality error = %v", err)
+	}
+	want = "WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE ((elem.a IS NULL AND elem.b IS NULL) OR (elem.a IS NOT NULL AND elem.b IS NOT NULL AND elem.a = elem.b)))"
+	if got != want {
+		t.Fatalf("Transpile() scoped array equality = %q, want %q", got, want)
+	}
+
+	gotParamSQL, gotParams, err := tr.TranspileParameterized(arrayLogic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() scoped array equality error = %v", err)
+	}
+	if gotParamSQL != want {
+		t.Fatalf("TranspileParameterized() scoped array equality = %q, want %q", gotParamSQL, want)
+	}
+	if len(gotParams) != 0 {
+		t.Fatalf("TranspileParameterized() params = %#v, want none", gotParams)
+	}
+
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "items", Type: FieldTypeArray},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "inactive"}},
+	})
+	enumTr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		Schema:                schema,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() enum schema error = %v", err)
+	}
+
+	enumCases := []struct {
+		name  string
+		logic string
+		want  string
+	}{
+		{
+			name:  "scoped field left and enum field right",
+			logic: `{"some":[{"var":"items"},{"==":[{"var":"current.status"},{"var":"status"}]}]}`,
+			want:  "WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE ((elem.status IS NULL AND status IS NULL) OR (elem.status IS NOT NULL AND status IS NOT NULL AND elem.status = status)))",
+		},
+		{
+			name:  "enum field left and scoped field right",
+			logic: `{"some":[{"var":"items"},{"==":[{"var":"status"},{"var":"current.status"}]}]}`,
+			want:  "WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE ((status IS NULL AND elem.status IS NULL) OR (status IS NOT NULL AND elem.status IS NOT NULL AND status = elem.status)))",
+		},
+	}
+
+	for _, tc := range enumCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := enumTr.Transpile(tc.logic)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("Transpile() = %q, want %q", got, tc.want)
+			}
+
+			gotParamSQL, gotParams, err := enumTr.TranspileParameterized(tc.logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotParamSQL != tc.want {
+				t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, tc.want)
+			}
+			if len(gotParams) != 0 {
+				t.Fatalf("TranspileParameterized() params = %#v, want none", gotParams)
+			}
+		})
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_AllDialectsSchemaModesNestedConditions(t *testing.T) {
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "a", Type: FieldTypeString},
+		{Name: "b", Type: FieldTypeString},
+		{Name: "c", Type: FieldTypeString},
+		{Name: "d", Type: FieldTypeString},
+		{Name: "e", Type: FieldTypeString},
+		{Name: "f", Type: FieldTypeString},
+		{Name: "items", Type: FieldTypeArray},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "inactive"}},
+	})
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-less"},
+		{name: "schema-aware", schema: schema},
+	}
+
+	logic := `{"and":[{"or":[{"==":[{"var":"a"},{"var":"b"}]},{"!=":[{"var":"c"},{"var":"d"}]}]},{"!":{"===":[{"var":"e"},{"var":"f"}]}},{"all":[{"var":"items"},{"or":[{"==":[{"var":"current.left"},{"var":"current.right"}]},{"!==":[{"var":"current.status"},{"var":"status"}]}]}]}]}`
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range allDialects() {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect:               d,
+						Schema:                mode.schema,
+						NullSafeFieldEquality: true,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+					}
+
+					out := runAllAPIVariants(t, tr, logic)
+					if len(out.params) != 0 || len(out.condParams) != 0 {
+						t.Fatalf("params = %#v condParams = %#v, want none", out.params, out.condParams)
+					}
+
+					assertContains(t, out.inlineSQL, "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))")
+					assertContains(t, out.inlineSQL, "((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR (c IS NOT NULL AND d IS NOT NULL AND c != d))")
+					assertContains(t, out.inlineSQL, "NOT (((e IS NULL AND f IS NULL) OR (e IS NOT NULL AND f IS NOT NULL AND e = f)))")
+					assertContains(t, out.inlineSQL, "((elem.left IS NULL AND elem.right IS NULL) OR (elem.left IS NOT NULL AND elem.right IS NOT NULL AND elem.left = elem.right))")
+					assertContains(t, out.inlineSQL, "((elem.status IS NULL AND status IS NOT NULL) OR (elem.status IS NOT NULL AND status IS NULL) OR (elem.status IS NOT NULL AND status IS NOT NULL AND elem.status <> status))")
+
+					if d == DialectClickHouse {
+						assertContains(t, out.inlineSQL, "arrayAll(elem ->")
+					} else {
+						assertContains(t, out.inlineSQL, "NOT EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE NOT")
+					}
+					if out.paramSQL != out.inlineSQL {
+						t.Fatalf("parameterized SQL = %q, want inline SQL %q", out.paramSQL, out.inlineSQL)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_CustomOperatorInteraction(t *testing.T) {
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "left", Type: FieldTypeString},
+		{Name: "right", Type: FieldTypeString},
+		{Name: "name", Type: FieldTypeString},
+		{Name: "normalized_name", Type: FieldTypeString},
+		{Name: "items", Type: FieldTypeArray},
+	})
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-less"},
+		{name: "schema-aware", schema: schema},
+	}
+
+	logic := `{"and":[{"==":[{"var":"left"},{"var":"right"}]},{"==":[{"lower":[{"var":"name"}]},{"var":"normalized_name"}]},{"some":[{"var":"items"},{"==":[{"lower":[{"var":"current.code"}]},{"var":"current.normalized"}]}]}]}`
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range allDialects() {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect:               d,
+						Schema:                mode.schema,
+						NullSafeFieldEquality: true,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+					}
+					registerNullSafeFieldEqualityCustomOperators(t, tr)
+
+					out := runAllAPIVariants(t, tr, logic)
+					if len(out.params) != 0 || len(out.condParams) != 0 {
+						t.Fatalf("params = %#v condParams = %#v, want none", out.params, out.condParams)
+					}
+
+					assertContains(t, out.inlineSQL, "((left IS NULL AND right IS NULL) OR (left IS NOT NULL AND right IS NOT NULL AND left = right))")
+					assertContains(t, out.inlineSQL, "LOWER(name) = normalized_name")
+					assertContains(t, out.inlineSQL, "LOWER(elem.code) = elem.normalized")
+					assertNotContains(t, out.inlineSQL, "LOWER(name) IS NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(name) IS NOT NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(elem.code) IS NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(elem.code) IS NOT NULL")
+
+					if d == DialectClickHouse {
+						assertContains(t, out.inlineSQL, "arrayExists(elem -> LOWER(elem.code) = elem.normalized, items)")
+					} else {
+						assertContains(t, out.inlineSQL, "EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE LOWER(elem.code) = elem.normalized)")
+					}
+					if out.paramSQL != out.inlineSQL {
+						t.Fatalf("parameterized SQL = %q, want inline SQL %q", out.paramSQL, out.inlineSQL)
+					}
+				})
+			}
+		})
+	}
+}
+
+func registerNullSafeFieldEqualityCustomOperators(t *testing.T, tr *Transpiler) {
+	t.Helper()
+	if err := tr.RegisterOperatorFunc("lower", func(_ string, args []interface{}) (string, error) {
+		if len(args) != 1 {
+			return "", fmt.Errorf("lower expects 1 argument")
+		}
+		return fmt.Sprintf("LOWER(%v)", args[0]), nil
+	}); err != nil {
+		t.Fatalf("RegisterOperatorFunc(lower) error = %v", err)
 	}
 }
 

@@ -148,6 +148,7 @@ Main transpiler instance.
 | `TranspileConditionParameterizedFromInterface(logic interface{}) (string, []QueryParam, error)` | Convert interface to parameterized SQL without WHERE |
 | `GetDialect() Dialect` | Get the configured dialect |
 | `SetSchema(schema *Schema)` | Set schema for field validation |
+| `SetNullSafeFieldEquality(enabled bool)` | Enable or disable null-safe field-to-field equality |
 | `RegisterOperator(name string, handler OperatorHandler) error` | Register custom operator with handler |
 | `RegisterOperatorFunc(name string, fn OperatorFunc) error` | Register custom operator with function |
 | `RegisterDialectAwareOperator(name string, handler DialectAwareOperatorHandler) error` | Register dialect-aware operator |
@@ -163,10 +164,16 @@ Configuration options for the transpiler.
 
 ```go
 type TranspilerConfig struct {
-    Dialect Dialect   // Required: target SQL dialect
-    Schema  *Schema   // Optional: schema for field validation
+    Dialect               Dialect // Required: target SQL dialect
+    Schema                *Schema // Optional: schema for field validation
+    NullSafeFieldEquality bool    // Optional: null-safe field-to-field equality
 }
 ```
+
+`NullSafeFieldEquality` defaults to `false`. When enabled, `==`, `===`, `!=`,
+and `!==` comparisons between two `var` operands use portable SQL that also
+matches rows where both fields are `NULL`. Field/literal comparisons are
+unchanged.
 
 ### Dialect
 

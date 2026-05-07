@@ -23,6 +23,7 @@ type ParamExpressionParser func(expr any, path string, pc *params.ParamCollector
 type OperatorConfig struct {
 	Schema                SchemaProvider
 	Dialect               dialect.Dialect
+	NullSafeFieldEquality bool
 	ExpressionParser      ExpressionParser
 	ParamExpressionParser ParamExpressionParser
 }

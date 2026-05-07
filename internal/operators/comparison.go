@@ -190,6 +190,47 @@ func isEqualityOperator(operator string) bool {
 	return operator == "==" || operator == "===" || operator == "!=" || operator == "!=="
 }
 
+func (c *ComparisonOperator) nullSafeFieldEqualityEnabled() bool {
+	return c.config != nil && c.config.NullSafeFieldEquality
+}
+
+func (c *ComparisonOperator) shouldUseNullSafeFieldEquality(operator string, leftArg, rightArg interface{}) bool {
+	if !c.nullSafeFieldEqualityEnabled() || !isEqualityOperator(operator) {
+		return false
+	}
+	return c.isNullSafeFieldOperand(leftArg) && c.isNullSafeFieldOperand(rightArg)
+}
+
+func (c *ComparisonOperator) isNullSafeFieldOperand(value interface{}) bool {
+	if _, ok := c.extractEqualityFieldOperand(value); ok {
+		return true
+	}
+	return isProcessedSQLFieldOperand(value)
+}
+
+func isProcessedSQLFieldOperand(value interface{}) bool {
+	if pv, ok := value.(ProcessedValue); ok {
+		return pv.IsSQL && pv.IsField
+	}
+	return false
+}
+
+func nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL string) string {
+	switch operator {
+	case "==", "===":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s = %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+	case "!=":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s != %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+	case "!==":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s <> %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+	default:
+		return ""
+	}
+}
+
 func isStrictEqualityOperator(operator string) bool {
 	return operator == "===" || operator == "!=="
 }
@@ -992,14 +1033,19 @@ func equalityLiteralForFieldSide(dec equalityDecision, fieldOnLeft bool) interfa
 func (c *ComparisonOperator) applySchemaComparisonCoercion(leftArg, rightArg interface{}) (interface{}, interface{}, error) {
 	leftFieldName := c.extractFieldNameFromValue(leftArg)
 	rightFieldName := c.extractFieldNameFromValue(rightArg)
+	leftIsField := leftFieldName != "" || isProcessedSQLFieldOperand(leftArg)
+	rightIsField := rightFieldName != "" || isProcessedSQLFieldOperand(rightArg)
 
-	if leftFieldName != "" && rightFieldName == "" {
+	if leftIsField && rightIsField {
+		return leftArg, rightArg, nil
+	}
+	if leftFieldName != "" && !rightIsField {
 		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
 		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
 			return nil, nil, err
 		}
 	}
-	if rightFieldName != "" && leftFieldName == "" {
+	if rightFieldName != "" && !leftIsField {
 		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
 		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
 			return nil, nil, err
@@ -1175,6 +1221,10 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 				return boolSQL(equalityPredicateConstant(operator, leftBool, rightBool)), nil
 			}
 		}
+	}
+
+	if c.shouldUseNullSafeFieldEquality(operator, args[0], args[1]) && !isLeftNull && !isRightNull {
+		return nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL), nil
 	}
 
 	switch operator {
@@ -1761,6 +1811,10 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 				return boolSQL(equalityPredicateConstant(operator, leftBool, rightBool)), nil
 			}
 		}
+	}
+
+	if c.shouldUseNullSafeFieldEquality(operator, args[0], args[1]) && !isLeftNull && !isRightNull {
+		return nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL), nil
 	}
 
 	switch operator {
