@@ -2,6 +2,7 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -229,6 +230,136 @@ func TestTranspiler_NullSafeFieldEquality_ReviewRegressions(t *testing.T) {
 				t.Fatalf("TranspileParameterized() params = %#v, want none", gotParams)
 			}
 		})
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_AllDialectsSchemaModesNestedConditions(t *testing.T) {
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "a", Type: FieldTypeString},
+		{Name: "b", Type: FieldTypeString},
+		{Name: "c", Type: FieldTypeString},
+		{Name: "d", Type: FieldTypeString},
+		{Name: "e", Type: FieldTypeString},
+		{Name: "f", Type: FieldTypeString},
+		{Name: "items", Type: FieldTypeArray},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "inactive"}},
+	})
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-less"},
+		{name: "schema-aware", schema: schema},
+	}
+
+	logic := `{"and":[{"or":[{"==":[{"var":"a"},{"var":"b"}]},{"!=":[{"var":"c"},{"var":"d"}]}]},{"!":{"===":[{"var":"e"},{"var":"f"}]}},{"all":[{"var":"items"},{"or":[{"==":[{"var":"current.left"},{"var":"current.right"}]},{"!==":[{"var":"current.status"},{"var":"status"}]}]}]}]}`
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range allDialects() {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect:               d,
+						Schema:                mode.schema,
+						NullSafeFieldEquality: true,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+					}
+
+					out := runAllAPIVariants(t, tr, logic)
+					if len(out.params) != 0 || len(out.condParams) != 0 {
+						t.Fatalf("params = %#v condParams = %#v, want none", out.params, out.condParams)
+					}
+
+					assertContains(t, out.inlineSQL, "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))")
+					assertContains(t, out.inlineSQL, "((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR (c IS NOT NULL AND d IS NOT NULL AND c != d))")
+					assertContains(t, out.inlineSQL, "NOT (((e IS NULL AND f IS NULL) OR (e IS NOT NULL AND f IS NOT NULL AND e = f)))")
+					assertContains(t, out.inlineSQL, "((elem.left IS NULL AND elem.right IS NULL) OR (elem.left IS NOT NULL AND elem.right IS NOT NULL AND elem.left = elem.right))")
+					assertContains(t, out.inlineSQL, "((elem.status IS NULL AND status IS NOT NULL) OR (elem.status IS NOT NULL AND status IS NULL) OR (elem.status IS NOT NULL AND status IS NOT NULL AND elem.status <> status))")
+
+					if d == DialectClickHouse {
+						assertContains(t, out.inlineSQL, "arrayAll(elem ->")
+					} else {
+						assertContains(t, out.inlineSQL, "NOT EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE NOT")
+					}
+					if out.paramSQL != out.inlineSQL {
+						t.Fatalf("parameterized SQL = %q, want inline SQL %q", out.paramSQL, out.inlineSQL)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_CustomOperatorInteraction(t *testing.T) {
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "left", Type: FieldTypeString},
+		{Name: "right", Type: FieldTypeString},
+		{Name: "name", Type: FieldTypeString},
+		{Name: "normalized_name", Type: FieldTypeString},
+		{Name: "items", Type: FieldTypeArray},
+	})
+	modes := []struct {
+		name   string
+		schema *Schema
+	}{
+		{name: "schema-less"},
+		{name: "schema-aware", schema: schema},
+	}
+
+	logic := `{"and":[{"==":[{"var":"left"},{"var":"right"}]},{"==":[{"lower":[{"var":"name"}]},{"var":"normalized_name"}]},{"some":[{"var":"items"},{"==":[{"lower":[{"var":"current.code"}]},{"var":"current.normalized"}]}]}]}`
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, d := range allDialects() {
+				t.Run(d.String(), func(t *testing.T) {
+					tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+						Dialect:               d,
+						Schema:                mode.schema,
+						NullSafeFieldEquality: true,
+					})
+					if err != nil {
+						t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+					}
+					registerNullSafeFieldEqualityCustomOperators(t, tr)
+
+					out := runAllAPIVariants(t, tr, logic)
+					if len(out.params) != 0 || len(out.condParams) != 0 {
+						t.Fatalf("params = %#v condParams = %#v, want none", out.params, out.condParams)
+					}
+
+					assertContains(t, out.inlineSQL, "((left IS NULL AND right IS NULL) OR (left IS NOT NULL AND right IS NOT NULL AND left = right))")
+					assertContains(t, out.inlineSQL, "LOWER(name) = normalized_name")
+					assertContains(t, out.inlineSQL, "LOWER(elem.code) = elem.normalized")
+					assertNotContains(t, out.inlineSQL, "LOWER(name) IS NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(name) IS NOT NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(elem.code) IS NULL")
+					assertNotContains(t, out.inlineSQL, "LOWER(elem.code) IS NOT NULL")
+
+					if d == DialectClickHouse {
+						assertContains(t, out.inlineSQL, "arrayExists(elem -> LOWER(elem.code) = elem.normalized, items)")
+					} else {
+						assertContains(t, out.inlineSQL, "EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE LOWER(elem.code) = elem.normalized)")
+					}
+					if out.paramSQL != out.inlineSQL {
+						t.Fatalf("parameterized SQL = %q, want inline SQL %q", out.paramSQL, out.inlineSQL)
+					}
+				})
+			}
+		})
+	}
+}
+
+func registerNullSafeFieldEqualityCustomOperators(t *testing.T, tr *Transpiler) {
+	t.Helper()
+	if err := tr.RegisterOperatorFunc("lower", func(_ string, args []interface{}) (string, error) {
+		if len(args) != 1 {
+			return "", fmt.Errorf("lower expects 1 argument")
+		}
+		return fmt.Sprintf("LOWER(%v)", args[0]), nil
+	}); err != nil {
+		t.Fatalf("RegisterOperatorFunc(lower) error = %v", err)
 	}
 }
 
