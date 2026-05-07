@@ -527,8 +527,9 @@ func int64FromJSNumber(n jsNumberLiteral) (int64, bool) {
 	}
 	switch v := n.value.(type) {
 	case uint:
-		if uint64(v) <= uint64(math.MaxInt64) {
-			return int64(v), true
+		u := uint64(v)
+		if u <= uint64(math.MaxInt64) {
+			return int64(u), true
 		}
 		return 0, false
 	case uint8:
