@@ -93,6 +93,52 @@ func TestTranspiler_NullSafeFieldEquality_AllDialects(t *testing.T) {
 	}
 }
 
+func TestTranspiler_NullSafeFieldEquality_DeeplyNested(t *testing.T) {
+	tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+
+	logic := `{"and":[{"or":[{"===":[{"var":"a"},{"var":"b"}]},{"!=":[{"var":"c"},{"var":"d"}]}]},{"and":[{"==":[{"var":["e","left"]},{"var":["f","right"]}]},{">":[{"var":"score"},10]}]}]}`
+
+	got, err := tr.Transpile(logic)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	want := "WHERE (" +
+		"(((a IS NULL AND b IS NULL) OR a = b) OR ((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR c != d))" +
+		" AND " +
+		"(((COALESCE(e, 'left') IS NULL AND COALESCE(f, 'right') IS NULL) OR COALESCE(e, 'left') = COALESCE(f, 'right')) AND score > 10)" +
+		")"
+	if got != want {
+		t.Fatalf("Transpile() = %q, want %q", got, want)
+	}
+
+	gotParamSQL, gotParams, err := tr.TranspileParameterized(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	wantParamSQL := "WHERE (" +
+		"(((a IS NULL AND b IS NULL) OR a = b) OR ((c IS NULL AND d IS NOT NULL) OR (c IS NOT NULL AND d IS NULL) OR c != d))" +
+		" AND " +
+		"(((COALESCE(e, @p1) IS NULL AND COALESCE(f, @p2) IS NULL) OR COALESCE(e, @p1) = COALESCE(f, @p2)) AND score > @p3)" +
+		")"
+	if gotParamSQL != wantParamSQL {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, wantParamSQL)
+	}
+	wantParams := []QueryParam{
+		{Name: "p1", Value: "left"},
+		{Name: "p2", Value: "right"},
+		{Name: "p3", Value: float64(10)},
+	}
+	if !reflect.DeepEqual(gotParams, wantParams) {
+		t.Fatalf("TranspileParameterized() params = %#v, want %#v", gotParams, wantParams)
+	}
+}
+
 func TestTranspiler_Transpile(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 
