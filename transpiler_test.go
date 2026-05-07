@@ -177,6 +177,59 @@ func TestTranspiler_NullSafeFieldEquality_ReviewRegressions(t *testing.T) {
 	if len(gotParams) != 0 {
 		t.Fatalf("TranspileParameterized() params = %#v, want none", gotParams)
 	}
+
+	schema := mustNewSchema([]FieldSchema{
+		{Name: "items", Type: FieldTypeArray},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active", "inactive"}},
+	})
+	enumTr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		Schema:                schema,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() enum schema error = %v", err)
+	}
+
+	enumCases := []struct {
+		name  string
+		logic string
+		want  string
+	}{
+		{
+			name:  "scoped field left and enum field right",
+			logic: `{"some":[{"var":"items"},{"==":[{"var":"current.status"},{"var":"status"}]}]}`,
+			want:  "WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE ((elem.status IS NULL AND status IS NULL) OR (elem.status IS NOT NULL AND status IS NOT NULL AND elem.status = status)))",
+		},
+		{
+			name:  "enum field left and scoped field right",
+			logic: `{"some":[{"var":"items"},{"==":[{"var":"status"},{"var":"current.status"}]}]}`,
+			want:  "WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS elem WHERE ((status IS NULL AND elem.status IS NULL) OR (status IS NOT NULL AND elem.status IS NOT NULL AND status = elem.status)))",
+		},
+	}
+
+	for _, tc := range enumCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := enumTr.Transpile(tc.logic)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("Transpile() = %q, want %q", got, tc.want)
+			}
+
+			gotParamSQL, gotParams, err := enumTr.TranspileParameterized(tc.logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterized() error = %v", err)
+			}
+			if gotParamSQL != tc.want {
+				t.Fatalf("TranspileParameterized() SQL = %q, want %q", gotParamSQL, tc.want)
+			}
+			if len(gotParams) != 0 {
+				t.Fatalf("TranspileParameterized() params = %#v, want none", gotParams)
+			}
+		})
+	}
 }
 
 func TestTranspiler_Transpile(t *testing.T) {

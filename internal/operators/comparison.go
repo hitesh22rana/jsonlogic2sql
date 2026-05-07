@@ -205,6 +205,10 @@ func (c *ComparisonOperator) isNullSafeFieldOperand(value interface{}) bool {
 	if _, ok := c.extractEqualityFieldOperand(value); ok {
 		return true
 	}
+	return isProcessedSQLFieldOperand(value)
+}
+
+func isProcessedSQLFieldOperand(value interface{}) bool {
 	if pv, ok := value.(ProcessedValue); ok {
 		return pv.IsSQL && pv.IsField
 	}
@@ -1029,14 +1033,19 @@ func equalityLiteralForFieldSide(dec equalityDecision, fieldOnLeft bool) interfa
 func (c *ComparisonOperator) applySchemaComparisonCoercion(leftArg, rightArg interface{}) (interface{}, interface{}, error) {
 	leftFieldName := c.extractFieldNameFromValue(leftArg)
 	rightFieldName := c.extractFieldNameFromValue(rightArg)
+	leftIsField := leftFieldName != "" || isProcessedSQLFieldOperand(leftArg)
+	rightIsField := rightFieldName != "" || isProcessedSQLFieldOperand(rightArg)
 
-	if leftFieldName != "" && rightFieldName == "" {
+	if leftIsField && rightIsField {
+		return leftArg, rightArg, nil
+	}
+	if leftFieldName != "" && !rightIsField {
 		rightArg = c.coerceValueForComparison(rightArg, leftFieldName)
 		if err := c.validateEnumValue(rightArg, leftFieldName); err != nil {
 			return nil, nil, err
 		}
 	}
-	if rightFieldName != "" && leftFieldName == "" {
+	if rightFieldName != "" && !leftIsField {
 		leftArg = c.coerceValueForComparison(leftArg, rightFieldName)
 		if err := c.validateEnumValue(leftArg, rightFieldName); err != nil {
 			return nil, nil, err
