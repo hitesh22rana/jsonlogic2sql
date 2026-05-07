@@ -1305,13 +1305,13 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContextAndPath(expr inte
 		if len(e) == 1 {
 			if varName, hasVar := e[OpVar]; hasVar {
 				if allowAccumulator && varName == AccumulatorVar {
-					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
+					return SQLResult(AccumulatorVar), nil
 				}
 				if sql, handled, err := a.arrayScopeVarToSQL(varName); handled || err != nil {
 					if err != nil {
 						return nil, err
 					}
-					return ProcessedValue{Value: sql, IsSQL: true}, nil
+					return SQLFieldResult(sql), nil
 				}
 				return e, nil
 			}
@@ -1350,7 +1350,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorWithContextAndPath(expr inte
 					if err != nil {
 						return nil, err
 					}
-					return ProcessedValue{Value: sql, IsSQL: true}, nil
+					return SQLResult(sql), nil
 				}
 			}
 		}
@@ -2061,13 +2061,13 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContextAndPath(
 		if len(e) == 1 {
 			if varName, hasVar := e[OpVar]; hasVar {
 				if allowAccumulator && varName == AccumulatorVar {
-					return ProcessedValue{Value: AccumulatorVar, IsSQL: true}, nil
+					return SQLResult(AccumulatorVar), nil
 				}
 				if sql, handled, err := a.arrayScopeVarToSQLParam(varName, pc); handled || err != nil {
 					if err != nil {
 						return nil, err
 					}
-					return ProcessedValue{Value: sql, IsSQL: true}, nil
+					return SQLFieldResult(sql), nil
 				}
 				return e, nil
 			}
@@ -2106,7 +2106,7 @@ func (a *ArrayOperator) rewriteScopedVarsForOperatorParamWithContextAndPath(
 					if err != nil {
 						return nil, err
 					}
-					return ProcessedValue{Value: sql, IsSQL: true}, nil
+					return SQLResult(sql), nil
 				}
 			}
 		}

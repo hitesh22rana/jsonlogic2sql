@@ -8,12 +8,21 @@ type ProcessedValue struct {
 	// IsSQL indicates whether Value is a pre-processed SQL expression (true)
 	// or a literal value that may need quoting (false)
 	IsSQL bool
+	// IsField indicates that Value came from a var operand after scope rewriting.
+	// This lets comparison operators preserve field-to-field semantics for
+	// array-scoped vars without re-validating internal aliases as schema fields.
+	IsField bool
 }
 
 // SQLResult creates a ProcessedValue marked as SQL.
 // Use this when returning generated SQL expressions from operators.
 func SQLResult(sql string) ProcessedValue {
 	return ProcessedValue{Value: sql, IsSQL: true}
+}
+
+// SQLFieldResult creates a ProcessedValue marked as a SQL field operand.
+func SQLFieldResult(sql string) ProcessedValue {
+	return ProcessedValue{Value: sql, IsSQL: true, IsField: true}
 }
 
 // LiteralResult creates a ProcessedValue marked as a literal.

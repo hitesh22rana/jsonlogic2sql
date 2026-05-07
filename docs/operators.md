@@ -172,14 +172,14 @@ match rows where both compared fields are `NULL`, matching JSONLogic's
 `null == null` and `null === null` behavior:
 
 ```sql
-WHERE ((a IS NULL AND b IS NULL) OR a = b)
+WHERE ((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))
 ```
 
 For inequality, the opt-in fallback checks one-null-only rows plus the ordinary
 comparison:
 
 ```sql
-WHERE ((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a != b)
+WHERE ((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a != b))
 ```
 
 This mode only applies when both operands are `var` expressions, including

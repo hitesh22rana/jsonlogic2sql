@@ -296,7 +296,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL: "((a IS NULL AND b IS NULL) OR a = b)",
+			wantSQL: "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))",
 		},
 		{
 			name:     "strict equality var to var",
@@ -305,7 +305,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL: "((a IS NULL AND b IS NULL) OR a = b)",
+			wantSQL: "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))",
 		},
 		{
 			name:     "loose inequality var to var",
@@ -314,7 +314,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a != b)",
+			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a != b))",
 		},
 		{
 			name:     "strict inequality var to var",
@@ -323,7 +323,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a <> b)",
+			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a <> b))",
 		},
 		{
 			name:     "defaulted vars use rendered operands",
@@ -332,7 +332,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": []interface{}{"a", "left-default"}},
 				map[string]interface{}{"var": []interface{}{"b", "right-default"}},
 			},
-			wantSQL: "((COALESCE(a, 'left-default') IS NULL AND COALESCE(b, 'right-default') IS NULL) OR COALESCE(a, 'left-default') = COALESCE(b, 'right-default'))",
+			wantSQL: "((COALESCE(a, 'left-default') IS NULL AND COALESCE(b, 'right-default') IS NULL) OR (COALESCE(a, 'left-default') IS NOT NULL AND COALESCE(b, 'right-default') IS NOT NULL AND COALESCE(a, 'left-default') = COALESCE(b, 'right-default')))",
 		},
 		{
 			name:     "field literal remains unchanged",
@@ -1562,7 +1562,7 @@ func TestComparisonOperator_ToSQL_NullSafeFieldEqualityPreservesSchemaLiteralSem
 				map[string]interface{}{"var": "amount"},
 				map[string]interface{}{"var": "code"},
 			},
-			wantSQL: "((amount IS NULL AND code IS NULL) OR amount = code)",
+			wantSQL: "((amount IS NULL AND code IS NULL) OR (amount IS NOT NULL AND code IS NOT NULL AND amount = code))",
 		},
 	}
 
@@ -2757,7 +2757,7 @@ func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL:    "((a IS NULL AND b IS NULL) OR a = b)",
+			wantSQL:    "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))",
 			wantParams: nil,
 		},
 		{
@@ -2767,7 +2767,7 @@ func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL:    "((a IS NULL AND b IS NULL) OR a = b)",
+			wantSQL:    "((a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a = b))",
 			wantParams: nil,
 		},
 		{
@@ -2777,7 +2777,7 @@ func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a != b)",
+			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a != b))",
 			wantParams: nil,
 		},
 		{
@@ -2787,7 +2787,7 @@ func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": "a"},
 				map[string]interface{}{"var": "b"},
 			},
-			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a <> b)",
+			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL AND a <> b))",
 			wantParams: nil,
 		},
 		{
@@ -2797,7 +2797,7 @@ func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
 				map[string]interface{}{"var": []interface{}{"a", "left-default"}},
 				map[string]interface{}{"var": []interface{}{"b", "right-default"}},
 			},
-			wantSQL: "((COALESCE(a, @p1) IS NULL AND COALESCE(b, @p2) IS NULL) OR COALESCE(a, @p1) = COALESCE(b, @p2))",
+			wantSQL: "((COALESCE(a, @p1) IS NULL AND COALESCE(b, @p2) IS NULL) OR (COALESCE(a, @p1) IS NOT NULL AND COALESCE(b, @p2) IS NOT NULL AND COALESCE(a, @p1) = COALESCE(b, @p2)))",
 			wantParams: []params.QueryParam{
 				{Name: "p1", Value: "left-default"},
 				{Name: "p2", Value: "right-default"},

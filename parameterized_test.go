@@ -705,7 +705,7 @@ func TestTranspileParameterized_NullSafeFieldEquality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranspileParameterized() error = %v", err)
 	}
-	if want := "WHERE ((x IS NULL AND y IS NULL) OR x = y)"; sql != want {
+	if want := "WHERE ((x IS NULL AND y IS NULL) OR (x IS NOT NULL AND y IS NOT NULL AND x = y))"; sql != want {
 		t.Fatalf("TranspileParameterized() SQL = %q, want %q", sql, want)
 	}
 	assertParams(t, params, nil)
@@ -714,7 +714,7 @@ func TestTranspileParameterized_NullSafeFieldEquality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranspileParameterized() defaulted vars error = %v", err)
 	}
-	if want := "WHERE ((COALESCE(x, @p1) IS NULL AND COALESCE(y, @p2) IS NULL) OR COALESCE(x, @p1) = COALESCE(y, @p2))"; sql != want {
+	if want := "WHERE ((COALESCE(x, @p1) IS NULL AND COALESCE(y, @p2) IS NULL) OR (COALESCE(x, @p1) IS NOT NULL AND COALESCE(y, @p2) IS NOT NULL AND COALESCE(x, @p1) = COALESCE(y, @p2)))"; sql != want {
 		t.Fatalf("TranspileParameterized() defaulted SQL = %q, want %q", sql, want)
 	}
 	assertParams(t, params, []QueryParam{

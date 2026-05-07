@@ -198,21 +198,30 @@ func (c *ComparisonOperator) shouldUseNullSafeFieldEquality(operator string, lef
 	if !c.nullSafeFieldEqualityEnabled() || !isEqualityOperator(operator) {
 		return false
 	}
-	_, leftIsField := c.extractEqualityFieldOperand(leftArg)
-	_, rightIsField := c.extractEqualityFieldOperand(rightArg)
-	return leftIsField && rightIsField
+	return c.isNullSafeFieldOperand(leftArg) && c.isNullSafeFieldOperand(rightArg)
+}
+
+func (c *ComparisonOperator) isNullSafeFieldOperand(value interface{}) bool {
+	if _, ok := c.extractEqualityFieldOperand(value); ok {
+		return true
+	}
+	if pv, ok := value.(ProcessedValue); ok {
+		return pv.IsSQL && pv.IsField
+	}
+	return false
 }
 
 func nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL string) string {
 	switch operator {
 	case "==", "===":
-		return fmt.Sprintf("((%s IS NULL AND %s IS NULL) OR %s = %s)", leftSQL, rightSQL, leftSQL, rightSQL)
+		return fmt.Sprintf("((%s IS NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s = %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
 	case "!=":
-		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR %s != %s)",
-			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s != %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
 	case "!==":
-		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR %s <> %s)",
-			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR (%s IS NOT NULL AND %s IS NOT NULL AND %s <> %s))",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
 	default:
 		return ""
 	}
