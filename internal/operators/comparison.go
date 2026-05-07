@@ -190,6 +190,34 @@ func isEqualityOperator(operator string) bool {
 	return operator == "==" || operator == "===" || operator == "!=" || operator == "!=="
 }
 
+func (c *ComparisonOperator) nullSafeFieldEqualityEnabled() bool {
+	return c.config != nil && c.config.NullSafeFieldEquality
+}
+
+func (c *ComparisonOperator) shouldUseNullSafeFieldEquality(operator string, leftArg, rightArg interface{}) bool {
+	if !c.nullSafeFieldEqualityEnabled() || !isEqualityOperator(operator) {
+		return false
+	}
+	_, leftIsField := c.extractEqualityFieldOperand(leftArg)
+	_, rightIsField := c.extractEqualityFieldOperand(rightArg)
+	return leftIsField && rightIsField
+}
+
+func nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL string) string {
+	switch operator {
+	case "==", "===":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NULL) OR %s = %s)", leftSQL, rightSQL, leftSQL, rightSQL)
+	case "!=":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR %s != %s)",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+	case "!==":
+		return fmt.Sprintf("((%s IS NULL AND %s IS NOT NULL) OR (%s IS NOT NULL AND %s IS NULL) OR %s <> %s)",
+			leftSQL, rightSQL, leftSQL, rightSQL, leftSQL, rightSQL)
+	default:
+		return ""
+	}
+}
+
 func isStrictEqualityOperator(operator string) bool {
 	return operator == "===" || operator == "!=="
 }
@@ -1177,6 +1205,10 @@ func (c *ComparisonOperator) ToSQL(operator string, args []interface{}) (string,
 		}
 	}
 
+	if c.shouldUseNullSafeFieldEquality(operator, args[0], args[1]) && !isLeftNull && !isRightNull {
+		return nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL), nil
+	}
+
 	switch operator {
 	case "==":
 		// Handle NULL comparisons
@@ -1761,6 +1793,10 @@ func (c *ComparisonOperator) ToSQLParam(operator string, args []interface{}, pc 
 				return boolSQL(equalityPredicateConstant(operator, leftBool, rightBool)), nil
 			}
 		}
+	}
+
+	if c.shouldUseNullSafeFieldEquality(operator, args[0], args[1]) && !isLeftNull && !isRightNull {
+		return nullSafeFieldEqualitySQL(operator, leftSQL, rightSQL), nil
 	}
 
 	switch operator {
