@@ -71,6 +71,23 @@ func setSchema(_ js.Value, args []js.Value) interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
+// setNullSafeFieldEquality(id: number, enabled: boolean) => {ok: true} | {error: string}
+func setNullSafeFieldEquality(_ js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return map[string]interface{}{"error": "id and enabled arguments required"}
+	}
+	id := args[0].Int()
+	enabled := args[1].Bool()
+
+	t, ok := transpilers[id]
+	if !ok {
+		return map[string]interface{}{"error": "transpiler not found"}
+	}
+
+	t.SetNullSafeFieldEquality(enabled)
+	return map[string]interface{}{"ok": true}
+}
+
 // transpile(id: number, jsonLogic: string) => {sql: string} | {error: string}
 func transpile(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 2 {
@@ -242,6 +259,7 @@ func getSamples(_ js.Value, _ []js.Value) interface{} {
 		{"name": "IN array", "jsonLogic": `{"in": [{"var": "country"}, ["US", "CA", "MX"]]}`},
 		{"name": "NOT IN", "jsonLogic": `{"!": {"in": [{"var": "status"}, ["blocked", "suspended"]]}}`},
 		{"name": "NULL check", "jsonLogic": `{"==": [{"var": "deleted_at"}, null]}`},
+		{"name": "Null-safe fields", "jsonLogic": `{"==": [{"var": "primary_email"}, {"var": "backup_email"}]}`},
 		{"name": "Chained comparison", "jsonLogic": `{"<": [18, {"var": "age"}, 65]}`},
 		{"name": "Nested arithmetic", "jsonLogic": `{">": [{"+": [{"var": "base"}, {"*": [{"var": "bonus"}, 0.1]}]}, 1000]}`},
 		{"name": "Conditional (if)", "jsonLogic": `{"if": [{">": [{"var": "age"}, 18]}, "adult", "minor"]}`},
@@ -260,6 +278,7 @@ func main() {
 	jsObj := map[string]interface{}{
 		"newTranspiler":                   js.FuncOf(newTranspiler),
 		"setSchema":                       js.FuncOf(setSchema),
+		"setNullSafeFieldEquality":        js.FuncOf(setNullSafeFieldEquality),
 		"transpile":                       js.FuncOf(transpile),
 		"transpileCondition":              js.FuncOf(transpileCondition),
 		"transpileParameterized":          js.FuncOf(transpileParameterized),
