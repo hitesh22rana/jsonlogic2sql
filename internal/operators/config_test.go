@@ -62,6 +62,9 @@ func TestNewOperatorConfig(t *testing.T) {
 			if config.HasSchema() != tt.wantSchema {
 				t.Errorf("HasSchema() = %v, want %v", config.HasSchema(), tt.wantSchema)
 			}
+			if config.NullSafeFieldEquality {
+				t.Errorf("NullSafeFieldEquality = true, want false by default")
+			}
 		})
 	}
 }

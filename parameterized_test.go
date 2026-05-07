@@ -692,6 +692,37 @@ func TestTranspileParameterized_NoParamsForPureVarExpressions(t *testing.T) {
 	}
 }
 
+func TestTranspileParameterized_NullSafeFieldEquality(t *testing.T) {
+	tp, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+
+	sql, params, err := tp.TranspileParameterized(`{"==": [{"var": "x"}, {"var": "y"}]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if want := "WHERE ((x IS NULL AND y IS NULL) OR x = y)"; sql != want {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", sql, want)
+	}
+	assertParams(t, params, nil)
+
+	sql, params, err = tp.TranspileParameterized(`{"==": [{"var": ["x", "left"]}, {"var": ["y", "right"]}]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() defaulted vars error = %v", err)
+	}
+	if want := "WHERE ((COALESCE(x, @p1) IS NULL AND COALESCE(y, @p2) IS NULL) OR COALESCE(x, @p1) = COALESCE(y, @p2))"; sql != want {
+		t.Fatalf("TranspileParameterized() defaulted SQL = %q, want %q", sql, want)
+	}
+	assertParams(t, params, []QueryParam{
+		{Name: "p1", Value: "left"},
+		{Name: "p2", Value: "right"},
+	})
+}
+
 func TestTranspileParameterized_CustomOperator(t *testing.T) {
 	tp, err := NewTranspiler(DialectBigQuery)
 	if err != nil {

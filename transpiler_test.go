@@ -21,6 +21,78 @@ func TestNewTranspiler(t *testing.T) {
 	}
 }
 
+func TestTranspiler_NullSafeFieldEquality(t *testing.T) {
+	defaultTr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() error = %v", err)
+	}
+	defaultSQL, err := defaultTr.Transpile(`{"==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() default error = %v", err)
+	}
+	if defaultSQL != "WHERE a = b" {
+		t.Fatalf("Transpile() default = %q, want %q", defaultSQL, "WHERE a = b")
+	}
+
+	configTr, err := NewTranspilerWithConfig(&TranspilerConfig{
+		Dialect:               DialectBigQuery,
+		NullSafeFieldEquality: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+	}
+	configSQL, err := configTr.Transpile(`{"==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() config error = %v", err)
+	}
+	if want := "WHERE ((a IS NULL AND b IS NULL) OR a = b)"; configSQL != want {
+		t.Fatalf("Transpile() config = %q, want %q", configSQL, want)
+	}
+
+	setterTr, err := NewTranspiler(DialectBigQuery)
+	if err != nil {
+		t.Fatalf("NewTranspiler() setter error = %v", err)
+	}
+	setterTr.SetNullSafeFieldEquality(true)
+	if !setterTr.config.NullSafeFieldEquality || !setterTr.operatorConfig.NullSafeFieldEquality {
+		t.Fatal("SetNullSafeFieldEquality(true) did not update public and operator config")
+	}
+	setterSQL, err := setterTr.Transpile(`{"!==": [{"var": "a"}, {"var": "b"}]}`)
+	if err != nil {
+		t.Fatalf("Transpile() setter error = %v", err)
+	}
+	if want := "WHERE ((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a <> b)"; setterSQL != want {
+		t.Fatalf("Transpile() setter = %q, want %q", setterSQL, want)
+	}
+}
+
+func TestTranspiler_NullSafeFieldEquality_AllDialects(t *testing.T) {
+	for _, d := range []Dialect{
+		DialectBigQuery,
+		DialectSpanner,
+		DialectPostgreSQL,
+		DialectDuckDB,
+		DialectClickHouse,
+	} {
+		t.Run(d.String(), func(t *testing.T) {
+			tr, err := NewTranspilerWithConfig(&TranspilerConfig{
+				Dialect:               d,
+				NullSafeFieldEquality: true,
+			})
+			if err != nil {
+				t.Fatalf("NewTranspilerWithConfig() error = %v", err)
+			}
+			got, err := tr.Transpile(`{"===": [{"var": "a"}, {"var": "b"}]}`)
+			if err != nil {
+				t.Fatalf("Transpile() error = %v", err)
+			}
+			if want := "WHERE ((a IS NULL AND b IS NULL) OR a = b)"; got != want {
+				t.Fatalf("Transpile() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestTranspiler_Transpile(t *testing.T) {
 	tr, _ := NewTranspiler(DialectBigQuery)
 

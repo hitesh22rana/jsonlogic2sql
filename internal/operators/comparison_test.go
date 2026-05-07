@@ -265,6 +265,123 @@ func TestComparisonOperator_ToSQL(t *testing.T) {
 	}
 }
 
+func TestComparisonOperator_ToSQL_NullSafeFieldEquality(t *testing.T) {
+	defaultConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	defaultOp := NewComparisonOperator(defaultConfig)
+	got, err := defaultOp.ToSQL("==", []interface{}{
+		map[string]interface{}{"var": "a"},
+		map[string]interface{}{"var": "b"},
+	})
+	if err != nil {
+		t.Fatalf("ToSQL() default unexpected error = %v", err)
+	}
+	if got != "a = b" {
+		t.Fatalf("ToSQL() default = %q, want %q", got, "a = b")
+	}
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.NullSafeFieldEquality = true
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []interface{}
+		wantSQL  string
+	}{
+		{
+			name:     "loose equality var to var",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL: "((a IS NULL AND b IS NULL) OR a = b)",
+		},
+		{
+			name:     "strict equality var to var",
+			operator: "===",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL: "((a IS NULL AND b IS NULL) OR a = b)",
+		},
+		{
+			name:     "loose inequality var to var",
+			operator: "!=",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a != b)",
+		},
+		{
+			name:     "strict inequality var to var",
+			operator: "!==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL: "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a <> b)",
+		},
+		{
+			name:     "defaulted vars use rendered operands",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": []interface{}{"a", "left-default"}},
+				map[string]interface{}{"var": []interface{}{"b", "right-default"}},
+			},
+			wantSQL: "((COALESCE(a, 'left-default') IS NULL AND COALESCE(b, 'right-default') IS NULL) OR COALESCE(a, 'left-default') = COALESCE(b, 'right-default'))",
+		},
+		{
+			name:     "field literal remains unchanged",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				"x",
+			},
+			wantSQL: "a = 'x'",
+		},
+		{
+			name:     "literal literal remains unchanged",
+			operator: "==",
+			args:     []interface{}{1, 1},
+			wantSQL:  "1 = 1",
+		},
+		{
+			name:     "field null remains null comparison",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				nil,
+			},
+			wantSQL: "a IS NULL",
+		},
+		{
+			name:     "schema-less strict field literal remains unchanged",
+			operator: "===",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				"1",
+			},
+			wantSQL: "a = '1'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := op.ToSQL(tt.operator, tt.args)
+			if err != nil {
+				t.Fatalf("ToSQL() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQL() = %q, want %q", got, tt.wantSQL)
+			}
+		})
+	}
+}
+
 func TestComparisonOperator_valueToSQL(t *testing.T) {
 	op := NewComparisonOperator(nil)
 
@@ -1377,6 +1494,81 @@ func TestComparisonOperator_ToSQL_EqualitySemanticsWithSchema(t *testing.T) {
 				}
 				return
 			}
+			if err != nil {
+				t.Fatalf("ToSQL() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQL() = %q, want %q", got, tt.wantSQL)
+			}
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQL_NullSafeFieldEqualityPreservesSchemaLiteralSemantics(t *testing.T) {
+	schema := newComparisonSchemaProvider(map[string]string{
+		"amount": "integer",
+		"code":   "string",
+	})
+	config := NewOperatorConfig(dialect.DialectBigQuery, schema)
+	config.NullSafeFieldEquality = true
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name     string
+		operator string
+		args     []interface{}
+		wantSQL  string
+	}{
+		{
+			name:     "strict field literal mismatch still folds",
+			operator: "===",
+			args: []interface{}{
+				map[string]interface{}{"var": "amount"},
+				"5",
+			},
+			wantSQL: "FALSE",
+		},
+		{
+			name:     "loose numeric invalid string still folds",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "amount"},
+				"abc",
+			},
+			wantSQL: "FALSE",
+		},
+		{
+			name:     "field null still emits IS NULL",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "amount"},
+				nil,
+			},
+			wantSQL: "amount IS NULL",
+		},
+		{
+			name:     "field literal coercion still applies",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "code"},
+				5,
+			},
+			wantSQL: "code = '5'",
+		},
+		{
+			name:     "field field uses null-safe fallback",
+			operator: "===",
+			args: []interface{}{
+				map[string]interface{}{"var": "amount"},
+				map[string]interface{}{"var": "code"},
+			},
+			wantSQL: "((amount IS NULL AND code IS NULL) OR amount = code)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := op.ToSQL(tt.operator, tt.args)
 			if err != nil {
 				t.Fatalf("ToSQL() unexpected error = %v", err)
 			}
@@ -2525,6 +2717,115 @@ func TestComparisonOperator_ToSQLParam(t *testing.T) {
 			}
 			if got != tt.wantSQL {
 				t.Errorf("ToSQLParam() SQL = %q, want %q", got, tt.wantSQL)
+			}
+			assertQueryParams(t, pc.Params(), tt.wantParams)
+		})
+	}
+}
+
+func TestComparisonOperator_ToSQLParam_NullSafeFieldEquality(t *testing.T) {
+	defaultConfig := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	defaultOp := NewComparisonOperator(defaultConfig)
+	pc := params.NewParamCollector(params.PlaceholderNamed)
+	got, err := defaultOp.ToSQLParam("==", []interface{}{
+		map[string]interface{}{"var": "a"},
+		map[string]interface{}{"var": "b"},
+	}, pc)
+	if err != nil {
+		t.Fatalf("ToSQLParam() default unexpected error = %v", err)
+	}
+	if got != "a = b" {
+		t.Fatalf("ToSQLParam() default = %q, want %q", got, "a = b")
+	}
+	assertQueryParams(t, pc.Params(), nil)
+
+	config := NewOperatorConfig(dialect.DialectBigQuery, nil)
+	config.NullSafeFieldEquality = true
+	op := NewComparisonOperator(config)
+
+	tests := []struct {
+		name       string
+		operator   string
+		args       []interface{}
+		wantSQL    string
+		wantParams []params.QueryParam
+	}{
+		{
+			name:     "loose equality var to var has no params",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL:    "((a IS NULL AND b IS NULL) OR a = b)",
+			wantParams: nil,
+		},
+		{
+			name:     "strict equality var to var has no params",
+			operator: "===",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL:    "((a IS NULL AND b IS NULL) OR a = b)",
+			wantParams: nil,
+		},
+		{
+			name:     "loose inequality var to var has no params",
+			operator: "!=",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a != b)",
+			wantParams: nil,
+		},
+		{
+			name:     "strict inequality var to var has no params",
+			operator: "!==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				map[string]interface{}{"var": "b"},
+			},
+			wantSQL:    "((a IS NULL AND b IS NOT NULL) OR (a IS NOT NULL AND b IS NULL) OR a <> b)",
+			wantParams: nil,
+		},
+		{
+			name:     "defaulted vars preserve default param ordering",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": []interface{}{"a", "left-default"}},
+				map[string]interface{}{"var": []interface{}{"b", "right-default"}},
+			},
+			wantSQL: "((COALESCE(a, @p1) IS NULL AND COALESCE(b, @p2) IS NULL) OR COALESCE(a, @p1) = COALESCE(b, @p2))",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "left-default"},
+				{Name: "p2", Value: "right-default"},
+			},
+		},
+		{
+			name:     "field literal remains parameterized comparison",
+			operator: "==",
+			args: []interface{}{
+				map[string]interface{}{"var": "a"},
+				"x",
+			},
+			wantSQL: "a = @p1",
+			wantParams: []params.QueryParam{
+				{Name: "p1", Value: "x"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := params.NewParamCollector(params.PlaceholderNamed)
+			got, err := op.ToSQLParam(tt.operator, tt.args, pc)
+			if err != nil {
+				t.Fatalf("ToSQLParam() unexpected error = %v", err)
+			}
+			if got != tt.wantSQL {
+				t.Fatalf("ToSQLParam() = %q, want %q", got, tt.wantSQL)
 			}
 			assertQueryParams(t, pc.Params(), tt.wantParams)
 		})
