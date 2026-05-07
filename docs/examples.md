@@ -13,14 +13,9 @@ This document provides comprehensive examples of JSON Logic expressions and thei
 WHERE name
 ```
 
-### Variable with Array Index
-
-```json
-{"var": 1}
-```
-```sql
-WHERE data[1]
-```
+> **Note:** JSONLogic's numeric `var` form, such as `{"var": 1}`, is not
+> supported in SQL output. SQL row values are column-name based, so `var`
+> operands must be string field names or `[fieldName, defaultValue]` arrays.
 
 ### Variable with Default Value
 
@@ -30,6 +25,10 @@ WHERE data[1]
 ```sql
 WHERE COALESCE(status, 'pending')
 ```
+
+With a schema, equality and inequality comparisons against `[field, default]`
+vars keep the `COALESCE` expression and still coerce the comparison literal
+where supported.
 
 ### Missing Field Check (Single)
 

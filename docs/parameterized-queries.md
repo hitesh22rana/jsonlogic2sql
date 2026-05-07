@@ -127,6 +127,7 @@ type QueryParam struct {
 | `3.14` | `float64` | Floating-point numbers |
 | `9223372036854775808` | `string` | Unquoted integers exceeding ±2^53−1 are preserved as exact strings via `json.Decoder.UseNumber` |
 | Coerced integer (schema) | `int64` | Schema coerces `"50000"` → `int64(50000)` for integer fields |
+| Coerced boolean equality (schema) | — | Schema coerces `1`, `0`, `"1"`, and `"0"` to inline `TRUE`/`FALSE` for boolean fields |
 | `true` / `false` | — | Not parameterized (inline `TRUE`/`FALSE`) |
 | `null` | — | Not parameterized (inline `NULL`) |
 | Integer string `> int64` range | `string` | Quoted string inputs like `"9223372036854775808"` also preserved as string |
@@ -137,11 +138,12 @@ type QueryParam struct {
 
 ## Schema Coercion
 
-When a schema is configured, values are coerced **before** being bound as parameters. For example, if a field is declared as `integer` and the JSONLogic contains a string `"50000"`, the bound parameter value will be `int64(50000)`, not the string `"50000"`.
+When a schema is configured, values are coerced **before** being bound as parameters. For example, if a field is declared as `integer` and the JSONLogic contains a string `"50000"`, the bound parameter value will be `int64(50000)`, not the string `"50000"`. Equality comparisons that fold to constants, such as an integer field compared with `"abc"`, do not add placeholder values.
 
 ```go
 schema, err := jsonlogic2sql.NewValidatedSchema([]jsonlogic2sql.FieldSchema{
     {Name: "amount", Type: jsonlogic2sql.FieldTypeInteger},
+    {Name: "active", Type: jsonlogic2sql.FieldTypeBoolean},
 })
 if err != nil {
     // handle invalid schema
@@ -153,6 +155,29 @@ sql, params, _ := transpiler.TranspileParameterized(
 )
 // sql    = "WHERE amount >= @p1"
 // params = [{Name: "p1", Value: int64(50000)}]  // coerced from string
+```
+
+For equality and inequality, schema-aware numeric and boolean coercion happens
+before parameter collection:
+
+```go
+sql, params, _ = transpiler.TranspileParameterized(
+    `{"and": [{"==": [{"var": "amount"}, "010"]}, {"==": [{"var": "active"}, "0"]}]}`,
+)
+// sql    = "WHERE (amount = @p1 AND active = FALSE)"
+// params = [{Name: "p1", Value: int64(10)}]
+```
+
+The same equality coercion applies when the field is accessed with a defaulted
+`var`; parameters are collected for the default and the coerced literal in SQL
+order:
+
+```go
+sql, params, _ = transpiler.TranspileParameterized(
+    `{"==": [{"var": ["amount", 0]}, "50"]}`,
+)
+// sql    = "WHERE COALESCE(amount, @p1) = @p2"
+// params = [{Name: "p1", Value: int64(0)}, {Name: "p2", Value: int64(50)}]
 ```
 
 ## Using Parameters with Database Drivers

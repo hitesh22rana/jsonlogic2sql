@@ -6,7 +6,7 @@ This document lists all JSON Logic operators supported by jsonlogic2sql.
 
 | Operator | Description | Example |
 |----------|-------------|---------|
-| `var` | Access variable values (including array indexing) | `{"var": "name"}` |
+| `var` | Access variable values by field name | `{"var": "name"}` |
 | `missing` | Check if variable(s) are missing | `{"missing": "email"}` |
 | `missing_some` | Check if some variables are missing | `{"missing_some": [1, ["a", "b"]]}` |
 
@@ -19,14 +19,9 @@ This document lists all JSON Logic operators supported by jsonlogic2sql.
 WHERE name
 ```
 
-### Variable with Array Index
-
-```json
-{"var": 1}
-```
-```sql
-WHERE data[1]
-```
+> **Note:** JSONLogic's numeric `var` form, such as `{"var": 1}`, is not
+> supported in SQL output. SQL row values are column-name based, so `var`
+> operands must be string field names or `[fieldName, defaultValue]` arrays.
 
 ### Variable with Default Value
 
@@ -36,6 +31,11 @@ WHERE data[1]
 ```sql
 WHERE COALESCE(status, 'pending')
 ```
+
+With a schema, equality and inequality comparisons against `[field, default]`
+vars preserve the `COALESCE` expression while applying schema-aware coercion to
+the comparison literal. The default value is emitted as provided; visible enum
+defaults are validated when enum values are configured.
 
 > **Note:** Path segments that start with a digit (e.g. `24h`, `7d`) are automatically quoted using the dialect-appropriate character. See [Identifier Quoting](dialects.md#identifier-quoting) for details.
 
@@ -95,6 +95,39 @@ WHERE status = 'active'
 ```sql
 WHERE count = 5
 ```
+
+With a schema, strict equality folds field/literal type mismatches that are
+known at transpile time:
+
+```json
+{"===": [{"var": "count"}, "5"]}
+```
+```sql
+WHERE FALSE
+```
+
+### Schema-Aware Equality Coercion
+
+When a schema is configured, equality and inequality use type-aware literal
+coercion where the JSONLogic behavior is portable SQL:
+
+- Numeric fields coerce known string and boolean literals through JavaScript-like
+  `ToNumber` semantics: `"010"` becomes `10`, `"0x10"` becomes `16`, `true`
+  becomes `1`, and non-numeric strings such as `"abc"` fold to `FALSE` for
+  `==`.
+- Boolean fields coerce known numeric and string literals through `ToNumber`,
+  then map `1` to `TRUE` and `0` to `FALSE`; any other finite number cannot
+  match a boolean field and folds to a constant.
+- String fields compared with numeric literals keep the canonical string match,
+  for example `code == 5` emits `code = '5'`.
+- Loose string/boolean field comparisons such as `code == true` return an error
+  because JSONLogic's runtime string coercion cannot be expressed portably in
+  SQL.
+
+The string/number case is intentionally canonical, not a complete JavaScript
+runtime model. `code == 5` matches `'5'`, but it does not also match strings
+that JavaScript would coerce to the same number, such as `'05'`, `'5.0'`, or
+`' 5 '`.
 
 ### Inequality
 

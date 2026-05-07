@@ -98,7 +98,7 @@ When a schema is provided, operators perform strict type validation:
 | String (`cat`, `substr`) | string, integer, number | array, object |
 | Array (`all`, `some`, `none`, `map`, `filter`, `reduce`, `merge`) | array | all non-array types |
 | Comparison (`>`, `>=`, `<`, `<=`) | integer, number, string | array, object, boolean |
-| Equality (`==`, `!=`, `===`, `!==`) | any | none (type-agnostic) |
+| Equality (`==`, `!=`, `===`, `!==`) | any | unsupported loose string/enum-string vs boolean literal |
 | In (`in`) | array (membership), string (containment) | varies by usage |
 
 ### Example
@@ -177,6 +177,10 @@ fmt.Println(sql)
 // Without schema: WHERE category_code IN (5960, 9000) - would fail in BigQuery
 ```
 
+For equality, this is a canonical string match. For example, `code == 5` emits
+`code = '5'`; it does not also match strings that JavaScript would coerce to the
+same number at runtime, such as `"05"`, `"5.0"`, or `" 5 "`.
+
 **String to Number** - When a numeric field is compared with string literals that are valid numbers, the strings are coerced to unquoted numbers:
 
 ```go
@@ -187,7 +191,90 @@ fmt.Println(sql)
 // Without schema: WHERE amount >= '50000'
 ```
 
-Coercion applies to all comparison operators (`==`, `!=`, `>`, `>=`, `<`, `<=`), the `in` operator with array literals, and string containment checks. Schema coercion also applies to comparisons nested within numeric expressions (e.g., `{"+": [{"==": [{"var": "status"}, 123]}, 0]}` correctly coerces `123` to `'123'` for a string field).
+For equality and inequality, numeric string literals follow JavaScript-like
+`ToNumber` semantics where the value is known at transpile time:
+
+```go
+// Schema: amount is integer type
+sql, _ = transpiler.Transpile(`{"==": [{"var": "amount"}, "010"]}`)
+fmt.Println(sql)
+// Output: WHERE amount = 10
+
+sql, _ = transpiler.Transpile(`{"==": [{"var": "amount"}, "abc"]}`)
+fmt.Println(sql)
+// Output: WHERE FALSE
+```
+
+**Boolean Equality** - When a boolean field is compared with numeric or string
+literals, equality and inequality coerce through JavaScript-like `ToNumber`
+semantics:
+
+```go
+// Schema: active is boolean type
+sql, _ := transpiler.Transpile(`{"==": [{"var": "active"}, "1"]}`)
+fmt.Println(sql)
+// Output: WHERE active = TRUE
+
+sql, _ = transpiler.Transpile(`{"==": [{"var": "active"}, "2"]}`)
+fmt.Println(sql)
+// Output: WHERE FALSE
+```
+
+**Strict Equality** - With a schema, `===` and `!==` fold known field/literal type
+mismatches before loose coercion:
+
+```go
+// Schema: amount is integer type
+sql, _ = transpiler.Transpile(`{"===": [{"var": "amount"}, "5"]}`)
+fmt.Println(sql)
+// Output: WHERE FALSE
+```
+
+Loose equality between string or enum-string fields and boolean literals is not
+portable SQL and returns an error:
+
+```go
+// Schema: code is string type
+_, err := transpiler.Transpile(`{"==": [{"var": "code"}, true]}`)
+// Error: loose equality between string field "code" and boolean literal is not supported
+```
+
+For string and enum fields, numeric literals are converted to their canonical
+JavaScript string form before comparison. This includes non-finite JSON numeric
+values produced by overflow:
+
+```go
+// Schema: code is string type
+sql, _ := transpiler.Transpile(`{"==": [{"var": "code"}, 1e400]}`)
+fmt.Println(sql)
+// Output: WHERE code = 'Infinity'
+```
+
+**Defaulted Variables** - Equality and inequality apply the same schema-aware
+literal coercion to `[field, default]` vars while preserving the `COALESCE`
+expression emitted by the `var` operator:
+
+```go
+// Schema: price is integer type
+sql, _ = transpiler.Transpile(`{"==": [{"var": ["price", 0]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE COALESCE(price, 0) = 50
+
+sql, _ = transpiler.Transpile(`{"===": [{"var": ["price", 0]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE FALSE
+
+sql, _ = transpiler.Transpile(`{"===": [{"var": ["price", "50"]}, "50"]}`)
+fmt.Println(sql)
+// Output: WHERE COALESCE(price, '50') = '50'
+```
+
+Strict or value-space folds only happen when both the field value and the
+visible default cannot match. Expression defaults are not folded because their
+runtime value is unknown. The default value itself is emitted as provided by the
+`var` operator; it is not coerced to the schema type before `COALESCE`.
+
+Basic schema coercion applies to comparison operators (`==`, `!=`, `>`, `>=`, `<`, `<=`), the `in` operator with array literals, and string containment checks. Equality and inequality add the JS-aware literal handling described above. Schema coercion also applies to comparisons nested within numeric expressions (e.g., `{"+": [{"==": [{"var": "status"}, 123]}, 0]}` correctly coerces `123` to `'123'` for a string field).
 
 **Numeric String Coercion** - In numeric operations (`+`, `-`, `*`, `/`, `%`), string operands are coerced per JSONLogic's JavaScript-like semantics. Valid numeric strings are converted to numbers, whitespace is trimmed, and non-numeric strings are safely quoted:
 
@@ -241,6 +328,17 @@ sql, err = transpiler.Transpile(`{"in": [{"var": "status"}, ["active", "pending"
 _, err = transpiler.Transpile(`{"==": [{"var": "status"}, "invalid"]}`)
 // Error: invalid enum value 'invalid' for field 'status': allowed values are [active pending cancelled]
 ```
+
+Visible enum defaults are also validated because they become literal SQL inside
+`COALESCE`:
+
+```go
+_, err = transpiler.Transpile(`{"==": [{"var": ["status", "unknown"]}, "active"]}`)
+// Error: invalid enum value 'unknown' for field 'status': allowed values are [active pending cancelled]
+```
+
+Expression defaults cannot be validated statically and are left to the generated
+SQL expression.
 
 ### Enum Schema JSON Format
 

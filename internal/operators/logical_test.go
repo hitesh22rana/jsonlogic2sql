@@ -157,10 +157,10 @@ func TestLogicalOperator_ToSQL(t *testing.T) {
 			hasError: true,
 		},
 		{
-			name:     "if with too many arguments",
+			name:     "if with multiple condition-value pairs and no else",
 			operator: "if",
 			args:     []interface{}{true, "a", "b", "c"},
-			expected: "CASE WHEN TRUE THEN 'a' ELSE NULL END",
+			expected: "CASE WHEN TRUE THEN 'a' WHEN 'b' THEN 'c' END",
 			hasError: false,
 		},
 
@@ -431,6 +431,17 @@ func TestLogicalOperator_handleIf_EdgeCases(t *testing.T) {
 				"C",
 			},
 			expected: "CASE WHEN score > 90 THEN 'A' WHEN score > 80 THEN 'B' ELSE 'C' END",
+			hasError: false,
+		},
+		{
+			name: "multiple condition-value pairs without final else",
+			args: []interface{}{
+				map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "score"}, 90}},
+				"A",
+				map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "score"}, 80}},
+				"B",
+			},
+			expected: "CASE WHEN score > 90 THEN 'A' WHEN score > 80 THEN 'B' END",
 			hasError: false,
 		},
 		{
@@ -1207,24 +1218,53 @@ func TestLogicalOperator_expressionToSQLParam(t *testing.T) {
 func TestLogicalOperator_handleIfParam(t *testing.T) {
 	op := NewLogicalOperator(nil)
 
-	pc := params.NewParamCollector(params.PlaceholderNamed)
-	args := []interface{}{
-		ProcessedValue{Value: "score > @p0", IsSQL: true},
-		"A",
-		"B",
-	}
-	got, err := op.handleIfParam(args, pc)
-	if err != nil {
-		t.Fatalf("handleIfParam() error = %v", err)
-	}
-	want := "CASE WHEN score > @p0 THEN @p1 ELSE @p2 END"
-	if got != want {
-		t.Errorf("handleIfParam() = %q, want %q", got, want)
-	}
-	ps := pc.Params()
-	if len(ps) != 2 || ps[0].Value != "A" || ps[1].Value != "B" {
-		t.Errorf("Params() = %#v, want A and B string binds", ps)
-	}
+	t.Run("simple if with else", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		args := []interface{}{
+			ProcessedValue{Value: "score > @p0", IsSQL: true},
+			"A",
+			"B",
+		}
+		got, err := op.handleIfParam(args, pc)
+		if err != nil {
+			t.Fatalf("handleIfParam() error = %v", err)
+		}
+		want := "CASE WHEN score > @p0 THEN @p1 ELSE @p2 END"
+		if got != want {
+			t.Errorf("handleIfParam() = %q, want %q", got, want)
+		}
+		ps := pc.Params()
+		if len(ps) != 2 || ps[0].Value != "A" || ps[1].Value != "B" {
+			t.Errorf("Params() = %#v, want A and B string binds", ps)
+		}
+	})
+
+	t.Run("multiple condition-value pairs without final else", func(t *testing.T) {
+		pc := params.NewParamCollector(params.PlaceholderNamed)
+		args := []interface{}{
+			map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "score"}, 90}},
+			"A",
+			map[string]interface{}{">": []interface{}{map[string]interface{}{"var": "score"}, 80}},
+			"B",
+		}
+		got, err := op.handleIfParam(args, pc)
+		if err != nil {
+			t.Fatalf("handleIfParam() error = %v", err)
+		}
+		want := "CASE WHEN score > @p1 THEN @p2 WHEN score > @p3 THEN @p4 END"
+		if got != want {
+			t.Errorf("handleIfParam() = %q, want %q", got, want)
+		}
+		wantParams := []params.QueryParam{
+			{Name: "p1", Value: 90},
+			{Name: "p2", Value: "A"},
+			{Name: "p3", Value: 80},
+			{Name: "p4", Value: "B"},
+		}
+		if !reflect.DeepEqual(pc.Params(), wantParams) {
+			t.Errorf("Params() = %#v, want %#v", pc.Params(), wantParams)
+		}
+	})
 }
 
 func TestLogicalOperator_processArgsParam(t *testing.T) {

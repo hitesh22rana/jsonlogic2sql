@@ -2,6 +2,8 @@ package jsonlogic2sql
 
 import (
 	"encoding/json"
+	"math"
+	"reflect"
 	"testing"
 )
 
@@ -302,6 +304,239 @@ func TestTranspileFromInterface_RejectsInvalidJSONNumberLiterals(t *testing.T) {
 	_, err := tr.TranspileFromInterface(logic)
 	if err == nil {
 		t.Fatal("expected error for invalid json.Number literal")
+	}
+}
+
+func TestTranspileFromMap_SchemaEqualityRejectsInvalidJSONNumberBeforeFold(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "code", Type: FieldTypeString},
+		{Name: "amount", Type: FieldTypeInteger},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name  string
+		input map[string]interface{}
+	}{
+		{
+			name: "malformed json number literal before strict fold",
+			input: map[string]interface{}{
+				"!==": []interface{}{
+					map[string]interface{}{"var": "code"},
+					json.Number("0 OR 1=1"),
+				},
+			},
+		},
+		{
+			name: "malformed json number default before strict fold",
+			input: map[string]interface{}{
+				"!==": []interface{}{
+					map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}},
+					"abc",
+				},
+			},
+		},
+		{
+			name: "malformed json number default before loose fold",
+			input: map[string]interface{}{
+				"!=": []interface{}{
+					map[string]interface{}{"var": []interface{}{"amount", json.Number("0 OR 1=1")}},
+					"abc",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tr.TranspileFromMap(tt.input); err == nil {
+				t.Fatal("TranspileFromMap() expected error for invalid json.Number")
+			}
+			if _, err := tr.TranspileFromInterface(tt.input); err == nil {
+				t.Fatal("TranspileFromInterface() expected error for invalid json.Number")
+			}
+			if _, _, err := tr.TranspileParameterizedFromInterface(tt.input); err == nil {
+				t.Fatal("TranspileParameterizedFromInterface() expected error for invalid json.Number")
+			}
+		})
+	}
+}
+
+func TestTranspile_SchemaEqualityValidatesEnumDefaultsForVarOperands(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"active"}},
+		{Name: "other", Type: FieldTypeString},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name  string
+		logic string
+	}{
+		{
+			name:  "invalid enum default on left var",
+			logic: `{"==":[{"var":["status","bogus"]},{"var":"other"}]}`,
+		},
+		{
+			name:  "invalid enum default on right var",
+			logic: `{"==":[{"var":"other"},{"var":["status","bogus"]}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tr.Transpile(tt.logic); err == nil {
+				t.Fatal("Transpile() expected error for invalid enum default")
+			}
+			if _, _, err := tr.TranspileParameterized(tt.logic); err == nil {
+				t.Fatal("TranspileParameterized() expected error for invalid enum default")
+			}
+		})
+	}
+}
+
+func TestTranspileFromInterface_SchemaEqualityPreservesFloat32ForEnum(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"1.2"}},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+	logic := map[string]interface{}{
+		"==": []interface{}{
+			map[string]interface{}{"var": "status"},
+			float32(1.2),
+		},
+	}
+
+	gotSQL, err := tr.TranspileFromInterface(logic)
+	if err != nil {
+		t.Fatalf("TranspileFromInterface() error = %v", err)
+	}
+	if wantSQL := "WHERE status = '1.2'"; gotSQL != wantSQL {
+		t.Fatalf("TranspileFromInterface() SQL = %q, want %q", gotSQL, wantSQL)
+	}
+
+	gotParamSQL, gotParams, err := tr.TranspileParameterizedFromInterface(logic)
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+	}
+	if wantSQL := "WHERE status = @p1"; gotParamSQL != wantSQL {
+		t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", gotParamSQL, wantSQL)
+	}
+	wantParams := []QueryParam{{Name: "p1", Value: "1.2"}}
+	if !reflect.DeepEqual(gotParams, wantParams) {
+		t.Fatalf("TranspileParameterizedFromInterface() params = %v, want %v", gotParams, wantParams)
+	}
+}
+
+func TestTranspileFromInterface_SchemaNumberStrictEqualityFoldsNonFinite(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "score", Type: FieldTypeNumber},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	tests := []struct {
+		name    string
+		op      string
+		value   float64
+		wantSQL string
+	}{
+		{name: "strict NaN", op: "===", value: math.NaN(), wantSQL: "WHERE FALSE"},
+		{name: "strict not NaN", op: "!==", value: math.NaN(), wantSQL: "WHERE TRUE"},
+		{name: "strict infinity", op: "===", value: math.Inf(1), wantSQL: "WHERE FALSE"},
+		{name: "strict not infinity", op: "!==", value: math.Inf(1), wantSQL: "WHERE TRUE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logic := map[string]interface{}{
+				tt.op: []interface{}{
+					map[string]interface{}{"var": "score"},
+					tt.value,
+				},
+			}
+
+			gotSQL, err := tr.TranspileFromInterface(logic)
+			if err != nil {
+				t.Fatalf("TranspileFromInterface() error = %v", err)
+			}
+			if gotSQL != tt.wantSQL {
+				t.Fatalf("TranspileFromInterface() SQL = %q, want %q", gotSQL, tt.wantSQL)
+			}
+
+			gotParamSQL, gotParams, err := tr.TranspileParameterizedFromInterface(logic)
+			if err != nil {
+				t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+			}
+			if gotParamSQL != tt.wantSQL {
+				t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", gotParamSQL, tt.wantSQL)
+			}
+			if len(gotParams) != 0 {
+				t.Fatalf("TranspileParameterizedFromInterface() params = %v, want none", gotParams)
+			}
+		})
+	}
+}
+
+func TestTranspile_SchemaStringEqualityCanonicalizesNonFiniteNumbers(t *testing.T) {
+	schema := NewSchema([]FieldSchema{
+		{Name: "code", Type: FieldTypeString},
+		{Name: "status", Type: FieldTypeEnum, AllowedValues: []string{"Infinity", "-Infinity"}},
+		{Name: "limited_status", Type: FieldTypeEnum, AllowedValues: []string{"active"}},
+	})
+	tr, _ := NewTranspiler(DialectBigQuery)
+	tr.SetSchema(schema)
+
+	jsonSQL, err := tr.Transpile(`{"==": [{"var": "code"}, 1e400]}`)
+	if err != nil {
+		t.Fatalf("Transpile() error = %v", err)
+	}
+	if want := "WHERE code = 'Infinity'"; jsonSQL != want {
+		t.Fatalf("Transpile() SQL = %q, want %q", jsonSQL, want)
+	}
+
+	jsonParamSQL, jsonParams, err := tr.TranspileParameterized(`{"==": [{"var": "code"}, -1e400]}`)
+	if err != nil {
+		t.Fatalf("TranspileParameterized() error = %v", err)
+	}
+	if want := "WHERE code = @p1"; jsonParamSQL != want {
+		t.Fatalf("TranspileParameterized() SQL = %q, want %q", jsonParamSQL, want)
+	}
+	if want := []QueryParam{{Name: "p1", Value: "-Infinity"}}; !reflect.DeepEqual(jsonParams, want) {
+		t.Fatalf("TranspileParameterized() params = %v, want %v", jsonParams, want)
+	}
+
+	interfaceSQL, interfaceParams, err := tr.TranspileParameterizedFromInterface(map[string]interface{}{
+		"!=": []interface{}{map[string]interface{}{"var": "code"}, math.Inf(1)},
+	})
+	if err != nil {
+		t.Fatalf("TranspileParameterizedFromInterface() error = %v", err)
+	}
+	if want := "WHERE code != @p1"; interfaceSQL != want {
+		t.Fatalf("TranspileParameterizedFromInterface() SQL = %q, want %q", interfaceSQL, want)
+	}
+	if want := []QueryParam{{Name: "p1", Value: "Infinity"}}; !reflect.DeepEqual(interfaceParams, want) {
+		t.Fatalf("TranspileParameterizedFromInterface() params = %v, want %v", interfaceParams, want)
+	}
+
+	enumSQL, err := tr.TranspileFromInterface(map[string]interface{}{
+		"==": []interface{}{map[string]interface{}{"var": "status"}, math.Inf(1)},
+	})
+	if err != nil {
+		t.Fatalf("TranspileFromInterface() enum error = %v", err)
+	}
+	if want := "WHERE status = 'Infinity'"; enumSQL != want {
+		t.Fatalf("TranspileFromInterface() enum SQL = %q, want %q", enumSQL, want)
+	}
+
+	_, err = tr.TranspileFromInterface(map[string]interface{}{
+		"==": []interface{}{map[string]interface{}{"var": "limited_status"}, math.Inf(1)},
+	})
+	if err == nil {
+		t.Fatal("TranspileFromInterface() expected enum validation error")
 	}
 }
 
@@ -821,7 +1056,7 @@ func TestComprehensiveNestedExpressions(t *testing.T) {
 		{
 			name:     "nested comparison in numeric",
 			input:    `{"+": [{">": [{"var": "a"}, 5]}, {"<": [{"var": "b"}, 10]}]}`,
-			expected: "WHERE (a > 5 + b < 10)",
+			expected: "WHERE ((a > 5) + (b < 10))",
 			hasError: false,
 		},
 		{
@@ -2104,7 +2339,7 @@ func TestNestedComparisonSchemaCoercion(t *testing.T) {
 		{
 			name:     "nested in numeric: coercion still applies",
 			input:    `{"+": [{"==": [{"var": "status"}, 123]}, 0]}`,
-			expected: "WHERE (status = '123' + 0)",
+			expected: "WHERE ((status = '123') + 0)",
 		},
 		{
 			name:     "nested in if in numeric: coercion still applies",
@@ -2114,7 +2349,7 @@ func TestNestedComparisonSchemaCoercion(t *testing.T) {
 		{
 			name:     "nested: string coerced to number for integer field",
 			input:    `{"+": [{">": [{"var": "amount"}, "50"]}, 0]}`,
-			expected: "WHERE (amount > 50 + 0)",
+			expected: "WHERE ((amount > 50) + 0)",
 		},
 	}
 

@@ -384,49 +384,25 @@ func (s *StringOperator) processIfExpression(args interface{}) (string, error) {
 	return result.String(), nil
 }
 
+func parenthesizeComparisonSQL(sql string) string {
+	if _, ok := sqlBooleanConstant(sql); ok {
+		return sql
+	}
+	return fmt.Sprintf("(%s)", sql)
+}
+
 // processComparisonExpression handles comparison operations within string operations.
 func (s *StringOperator) processComparisonExpression(op string, args interface{}) (string, error) {
 	argsSlice, ok := args.([]interface{})
 	if !ok {
 		return "", fmt.Errorf("comparison operation requires array of arguments")
 	}
-
-	if len(argsSlice) != 2 {
-		return "", fmt.Errorf("comparison operation requires exactly 2 arguments")
-	}
-
-	// Convert arguments to SQL
-	left, err := s.valueToSQL(argsSlice[0])
+	compOp := NewComparisonOperator(s.config)
+	sql, err := compOp.ToSQL(op, argsSlice)
 	if err != nil {
-		return "", fmt.Errorf("invalid comparison left argument: %w", err)
+		return "", err
 	}
-
-	right, err := s.valueToSQL(argsSlice[1])
-	if err != nil {
-		return "", fmt.Errorf("invalid comparison right argument: %w", err)
-	}
-
-	// Generate SQL based on operation
-	switch op {
-	case ">":
-		return fmt.Sprintf("(%s > %s)", left, right), nil
-	case ">=":
-		return fmt.Sprintf("(%s >= %s)", left, right), nil
-	case "<":
-		return fmt.Sprintf("(%s < %s)", left, right), nil
-	case "<=":
-		return fmt.Sprintf("(%s <= %s)", left, right), nil
-	case "==":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "===":
-		return fmt.Sprintf("(%s = %s)", left, right), nil
-	case "!=":
-		return fmt.Sprintf("(%s != %s)", left, right), nil
-	case "!==":
-		return fmt.Sprintf("(%s <> %s)", left, right), nil
-	default:
-		return "", fmt.Errorf("unsupported comparison operation: %s", op)
-	}
+	return parenthesizeComparisonSQL(sql), nil
 }
 
 // processMaxMinExpression handles max/min operations within string operations.
@@ -624,7 +600,11 @@ func (s *StringOperator) valueToSQLParam(value interface{}, pc *params.ParamColl
 						return "", fmt.Errorf("comparison operation requires array of arguments")
 					}
 					compOp := NewComparisonOperator(s.config)
-					return compOp.ToSQLParam(op, argsSlice, pc)
+					sql, err := compOp.ToSQLParam(op, argsSlice, pc)
+					if err != nil {
+						return "", err
+					}
+					return parenthesizeComparisonSQL(sql), nil
 				case "if":
 					argsSlice, ok := args.([]interface{})
 					if !ok {

@@ -205,13 +205,17 @@ func (l *LogicalOperator) handleIf(args []interface{}) (string, error) {
 		return "", fmt.Errorf("if requires at least 2 arguments")
 	}
 
-	// Handle nested IF statements (multiple condition/value pairs)
-	if len(args) > 3 && len(args)%2 == 1 {
-		// Odd number of arguments means we have multiple condition/value pairs + final else
+	// Handle nested IF statements (multiple condition/value pairs, with optional final else).
+	if len(args) > 3 {
 		var caseParts []string
+		pairLimit := len(args)
+		hasElse := len(args)%2 == 1
+		if hasElse {
+			pairLimit = len(args) - 1
+		}
 
 		// Process condition/value pairs
-		for i := 0; i < len(args)-1; i += 2 {
+		for i := 0; i < pairLimit; i += 2 {
 			condition, err := l.expressionToSQL(args[i])
 			if err != nil {
 				return "", fmt.Errorf("invalid if condition %d: %w", i/2, err)
@@ -225,13 +229,17 @@ func (l *LogicalOperator) handleIf(args []interface{}) (string, error) {
 			caseParts = append(caseParts, fmt.Sprintf("WHEN %s THEN %s", condition, value))
 		}
 
-		// Handle final else value
-		elseValue, err := l.expressionToSQL(args[len(args)-1])
-		if err != nil {
-			return "", fmt.Errorf("invalid if else value: %w", err)
+		if hasElse {
+			// Handle final else value
+			elseValue, err := l.expressionToSQL(args[len(args)-1])
+			if err != nil {
+				return "", fmt.Errorf("invalid if else value: %w", err)
+			}
+
+			return fmt.Sprintf("CASE %s ELSE %s END", strings.Join(caseParts, " "), elseValue), nil
 		}
 
-		return fmt.Sprintf("CASE %s ELSE %s END", strings.Join(caseParts, " "), elseValue), nil
+		return fmt.Sprintf("CASE %s END", strings.Join(caseParts, " ")), nil
 	}
 
 	// Handle simple IF (2-3 arguments)
@@ -501,9 +509,15 @@ func (l *LogicalOperator) handleIfParam(args []interface{}, pc *params.ParamColl
 		return "", fmt.Errorf("if requires at least 2 arguments")
 	}
 
-	if len(args) > 3 && len(args)%2 == 1 {
+	if len(args) > 3 {
 		var caseParts []string
-		for i := 0; i < len(args)-1; i += 2 {
+		pairLimit := len(args)
+		hasElse := len(args)%2 == 1
+		if hasElse {
+			pairLimit = len(args) - 1
+		}
+
+		for i := 0; i < pairLimit; i += 2 {
 			condition, err := l.expressionToSQLParam(args[i], pc)
 			if err != nil {
 				return "", fmt.Errorf("invalid if condition %d: %w", i/2, err)
@@ -514,11 +528,14 @@ func (l *LogicalOperator) handleIfParam(args []interface{}, pc *params.ParamColl
 			}
 			caseParts = append(caseParts, fmt.Sprintf("WHEN %s THEN %s", condition, value))
 		}
-		elseValue, err := l.expressionToSQLParam(args[len(args)-1], pc)
-		if err != nil {
-			return "", fmt.Errorf("invalid if else value: %w", err)
+		if hasElse {
+			elseValue, err := l.expressionToSQLParam(args[len(args)-1], pc)
+			if err != nil {
+				return "", fmt.Errorf("invalid if else value: %w", err)
+			}
+			return fmt.Sprintf("CASE %s ELSE %s END", strings.Join(caseParts, " "), elseValue), nil
 		}
-		return fmt.Sprintf("CASE %s ELSE %s END", strings.Join(caseParts, " "), elseValue), nil
+		return fmt.Sprintf("CASE %s END", strings.Join(caseParts, " ")), nil
 	}
 
 	condition, err := l.expressionToSQLParam(args[0], pc)
