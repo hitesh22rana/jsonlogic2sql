@@ -18,7 +18,7 @@ coverage.*
 profile.cov
 
 # Dependency directories (remove the comment below to include it)
-# vendor/
+ vendor/
 
 # Go workspace file
 go.work
@@ -28,17 +28,8 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
-
-# Local testing files
-report.md
-results.md
-run_tests.sh
-test-cases.md
-PRODUCTION_READINESS.md
-TEST_COVERAGE_SUMMARY.md
-FINDINGS.md
+ .idea/
+ .vscode/
 
 # Schema files (may contain sensitive field names)
 schema.json
